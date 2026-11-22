@@ -149,11 +149,24 @@ fun NavGraph(
             composable("settings") {
                 SettingsScreen(
                     onStealthClick   = { navController.navigate("stealth") },
-                    onRegisterClick  = { navController.navigate("register") }
+                    onRegisterClick  = { navController.navigate("register") },
+                    onGuardiansClick = { navController.navigate("guardians") },
+                    onJourneyClick   = { navController.navigate("journey") },
+                    onVaultClick     = { navController.navigate("vault") },
+                    onPermissionsClick = { navController.navigate("permissions") }
                 )
             }
 
             composable("stealth") { StealthSettingsScreen() }
+
+            // ── Frontend deliverables: guardian mgmt, journey check-in,
+            //    evidence vault, permissions (demo-data driven) ──────────
+            composable("guardians") { GuardianScreen() }
+            composable("journey") {
+                JourneyScreen(onOpenSafeWalk = { navController.navigate("safewalk") })
+            }
+            composable("vault") { EvidenceVaultScreen() }
+            composable("permissions") { PermissionsScreen() }
 
             // Phone number registration — required for app-to-app voice messaging
             composable("register") {

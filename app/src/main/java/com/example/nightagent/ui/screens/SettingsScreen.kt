@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -19,7 +20,11 @@ import com.example.nightagent.sos.SafetySettings
 @Composable
 fun SettingsScreen(
     onStealthClick: () -> Unit = {},
-    onRegisterClick: () -> Unit = {}
+    onRegisterClick: () -> Unit = {},
+    onGuardiansClick: () -> Unit = {},
+    onJourneyClick: () -> Unit = {},
+    onVaultClick: () -> Unit = {},
+    onPermissionsClick: () -> Unit = {}
 ) {
 
     // ✅ Proper reactive state
@@ -245,6 +250,95 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(32.dp))
+        }
+
+        // 🧰 More tools (guardian mgmt, journey check-in, evidence vault, permissions)
+        item {
+
+            Text(
+                text = "More Tools",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            SettingsLinkCard(
+                title = "Guardians",
+                subtitle = "Manage who can track and help you",
+                icon = Icons.Default.Group
+            ) { onGuardiansClick() }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            SettingsLinkCard(
+                title = "Journey Check-in",
+                subtitle = "Check in during walks so guardians stay calm",
+                icon = Icons.AutoMirrored.Filled.DirectionsWalk
+            ) { onJourneyClick() }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            SettingsLinkCard(
+                title = "Evidence Vault",
+                subtitle = "Browse past SOS evidence records",
+                icon = Icons.Default.FolderCopy
+            ) { onVaultClick() }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            SettingsLinkCard(
+                title = "Permissions",
+                subtitle = "Check and grant app permissions",
+                icon = Icons.Default.VerifiedUser
+            ) { onPermissionsClick() }
+
+            Spacer(modifier = Modifier.height(32.dp))
+        }
+    }
+}
+
+@Composable
+private fun SettingsLinkCard(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+        onClick = onClick
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = Lavender,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.SemiBold)
+                Text(
+                    subtitle,
+                    fontSize = 12.sp,
+                    color = TextSecondary
+                )
+            }
+            Icon(
+                Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = TextSecondary
+            )
         }
     }
 }
