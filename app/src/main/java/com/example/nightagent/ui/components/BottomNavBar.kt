@@ -27,7 +27,7 @@ fun BottomNavBar(selected: String, onNavigate: (String) -> Unit) {
         val items = listOf(
             NavItem("Home",     "home",     Icons.Outlined.Home,     Icons.Filled.Home),
             NavItem("Map",      "map",      Icons.Outlined.Map,      Icons.Filled.Map),
-            NavItem("Contacts", "contacts", Icons.Outlined.People,   Icons.Filled.People),
+NavItem("Contacts", "guardians", Icons.Outlined.People, Icons.Filled.People),
             NavItem("Evidence", "evidence", Icons.Outlined.VideoFile, Icons.Filled.VideoFile),
             NavItem("Safety",   "safety",   Icons.Outlined.Shield,   Icons.Filled.Shield),
             NavItem("Settings", "settings", Icons.Outlined.Settings, Icons.Filled.Settings)

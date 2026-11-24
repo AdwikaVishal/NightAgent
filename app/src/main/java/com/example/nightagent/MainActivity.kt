@@ -82,10 +82,12 @@ class MainActivity : ComponentActivity() {
     }
 
     // 🔥 FCM TOKEN — also update in Firestore for voice message push notifications
-    FirebaseMessaging.getInstance().token.addOnCompleteListener {
+    FirebaseMessaging.getInstance().token.addOnCompleteListener { it ->
         if (it.isSuccessful) {
             val token = it.result
-            Log.d("FCM", "Token: $token")
+            // Temporary debug logging — copy this token for Firebase Console test messaging
+            Log.d("FCM_TOKEN_DEBUG", "Token: $token")
+            Log.d("FCM", "Token acquired (check FCM_TOKEN_DEBUG for full token)")
             AuthManager.saveFCMToken(token)
             // Also update in the users collection for voice messaging
             val uid = FirebaseAuth.getInstance().currentUser?.uid
@@ -95,6 +97,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         } else {
+            Log.e("FCM_TOKEN_DEBUG", "Token retrieval failed", it.exception)
             Log.e("FCM", "Token failed", it.exception)
         }
     }

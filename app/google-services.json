@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "480993110584",
-    "project_id": "nightagent-35d38",
-    "storage_bucket": "nightagent-35d38.firebasestorage.app"
+    "project_number": "348780061545",
+    "project_id": "nightagent-5ed69",
+    "storage_bucket": "nightagent-5ed69.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:480993110584:android:60e10c0915020bbc7d14cd",
+        "mobilesdk_app_id": "1:348780061545:android:bf005df1e59e7d955653f8",
         "android_client_info": {
           "package_name": "com.example.nightagent"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyBMo2a3e5Pb3xKU2c-4WZwLym6LazFLiuQ"
+          "current_key": "AIzaSyDKRdxLnXnNtjylBqXyHfUUnn7nk557Tl0"
         }
       ],
       "services": {

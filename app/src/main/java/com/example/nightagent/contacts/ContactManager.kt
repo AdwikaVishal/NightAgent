@@ -22,15 +22,19 @@ object ContactManager {
 
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-        val stored = prefs.getStringSet("numbers", emptySet())!!
+        val stored = prefs.getStringSet("numbers", emptySet()) ?: emptySet<String>()
 
         return stored.map {
 
-            val parts = it.split("|")
+            val parts = it.split("|", limit = 2)
+
+            if (parts.size < 2 || parts[1].isBlank()) {
+                return@map EmergencyContact(name = parts[0], phone = "", isPriority = false)
+            }
 
             EmergencyContact(
-                name = parts[0],
-                phone = parts[1],
+                name = parts[0].trim(),
+                phone = parts[1].trim(),
                 isPriority = false
             )
         }

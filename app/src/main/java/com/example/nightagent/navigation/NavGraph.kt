@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.compose.*
 import com.example.nightagent.evidence.EvidenceCaptureService
 import com.example.nightagent.evidence.EvidenceScreen
+import com.example.nightagent.ui.screens.GuardianScreen
 import com.example.nightagent.sos.SOSManager
 import com.example.nightagent.streaming.GuardianListenScreen
 import com.example.nightagent.streaming.VictimStreamScreen
@@ -119,6 +120,8 @@ fun NavGraph(
             composable("map") { MapScreen() }
 
             composable("contacts") { ContactsScreen(onVoiceChat = { uid -> navController.navigate("voicechat/$uid") }) }
+
+            composable("guardians") { GuardianScreen() }
 
             composable("safety") {
                 SafetyScreen(onFakeCallClick = {
