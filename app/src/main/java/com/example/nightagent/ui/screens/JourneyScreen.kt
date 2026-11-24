@@ -1,366 +1,254 @@
 package com.example.nightagent.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.nightagent.ui.demo.DemoData
-import com.example.nightagent.ui.demo.JourneyRecord
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.nightagent.journey.JourneyViewModel
+import com.example.nightagent.journey.RouteProvider
+import com.example.nightagent.journey.model.Journey
+import com.example.nightagent.journey.model.JourneyStatus
 import com.example.nightagent.ui.theme.*
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-/**
- * Safe Journey screen with check-in UI — currently UI-only.
- *
- * The "ongoing" journey, its timer/distance and the check-in countdown are all
- * demo simulation (no real SafeWalk session is started here and no real SOS is
- * triggered when the countdown expires — a warning banner is shown instead).
- * The "Open Safe Walk" button routes to the existing, real SafeWalkScreen.
- * Journey history comes from [DemoData].
- *
- * Check-in model: the user must tap "I'm Safe" before the countdown reaches
- * zero; guardians are (in the real product) alerted if they don't.
- */
 @Composable
-fun JourneyScreen(onOpenSafeWalk: () -> Unit = {}) {
+fun JourneyScreen(onOpenSafeWalk: () -> Unit = {}, vm: JourneyViewModel = viewModel()) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val state by vm.uiState.collectAsState()
+    val history by vm.history.collectAsState()
+    val journey = state.journey
+    val activeJourney = journey?.takeIf { it.statusEnum() == JourneyStatus.ACTIVE }
 
-    val history = DemoData.journeys
+    var destinationName by remember { mutableStateOf("") }
+    var destLat by remember { mutableStateOf("") }
+    var destLng by remember { mutableStateOf("") }
+    var etaMinutes by remember { mutableStateOf("30") }
+    var checkInMinutes by remember { mutableStateOf("5") }
+    var checkInTimeoutSec by remember { mutableStateOf("120") }
+    var searchQuery by remember { mutableStateOf("") }
+    var searching by remember { mutableStateOf(false) }
+    var formError by remember { mutableStateOf<String?>(null) }
 
-    // ── Demo live journey state ──────────────────────────────────────────
-    var elapsedSec by remember { mutableStateOf(0) }
-    var distanceKm by remember { mutableStateOf(0.42) }
-    var checkInsDone by remember { mutableStateOf(1) }
-
-    // Check-in countdown: 5 minutes per check-in window
-    var checkInRemaining by remember { mutableStateOf(300) }
-    var missedCheckIn by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(1000)
-            elapsedSec += 1
-            distanceKm += 0.0004   // ~1.4 m/s
-            if (!missedCheckIn && checkInRemaining > 0) {
-                checkInRemaining -= 1
-                if (checkInRemaining == 0) missedCheckIn = true
-            }
-        }
+    var showBgDisclosure by remember { mutableStateOf(false) }
+    var showBgSettingsHint by remember { mutableStateOf(false) }
+    var bgDisclosureShown by remember { mutableStateOf(false) }
+    val neededPerms = remember {
+        buildList {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+            add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+        }.toTypedArray()
     }
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+    val bgLocationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
-    fun checkIn() {
-        checkInRemaining = 300
-        missedCheckIn = false
-        checkInsDone += 1
-    }
+    LaunchedEffect(Unit) { vm.refreshHistory() }
+
+    fun hasLocationPerm(): Boolean = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    fun hasBackgroundLocationPerm(): Boolean = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) true else
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(horizontal = 20.dp)
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-
-        // ── Header ───────────────────────────────────────────────────────
         item {
-            Spacer(modifier = Modifier.height(24.dp))
-            Text(
-                "Safe Journey",
-                fontSize = 28.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                "Check in during your walk so guardians stay calm",
-                fontSize = 13.sp,
-                color = TextSecondary
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            DemoBanner()
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(Modifier.height(24.dp))
+            Text("Safe Journey", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
+            Text("Plan your journey, track live location, and respond to safety check-ins.", fontSize = 13.sp, color = TextSecondary)
         }
 
-        // ── Ongoing journey card ─────────────────────────────────────────
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = Lavender.copy(alpha = 0.18f)
-                )
-            ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .background(SuccessGreen, CircleShape)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            "Journey in progress",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            color = TextPrimary
-                        )
-                        Spacer(modifier = Modifier.weight(1f))
-                        Text(
-                            "Live",
-                            fontSize = 12.sp,
-                            color = SuccessGreen,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Route
-                    RouteRow("Office, Tech Park", Icons.Default.RadioButtonChecked, PurpleStart)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    RouteRow("Home, MG Road", Icons.Default.Place, PurpleEnd)
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // Stats
-                    Row {
-                        JourneyStat(
-                            modifier = Modifier.weight(1f),
-                            label = "Elapsed",
-                            value = "%d:%02d".format(elapsedSec / 60, elapsedSec % 60)
-                        )
-                        JourneyStat(
-                            modifier = Modifier.weight(1f),
-                            label = "Distance",
-                            value = "%.2f km".format(distanceKm)
-                        )
-                        JourneyStat(
-                            modifier = Modifier.weight(1f),
-                            label = "Check-ins",
-                            value = checkInsDone.toString()
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // ── Check-in countdown ring ─────────────────────────
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(150.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        val progress = checkInRemaining / 300f
-                        androidx.compose.foundation.Canvas(
-                            modifier = Modifier.size(130.dp)
-                        ) {
-                            drawArc(
-                                color = Lavender.copy(alpha = 0.4f),
-                                startAngle = -90f, sweepAngle = 360f, useCenter = false,
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(
-                                    width = 10f, cap = StrokeCap.Round
-                                )
-                            )
-                            drawArc(
-                                color = if (missedCheckIn) SOSRed
-                                else if (progress < 0.25f) Color(0xFFFF9800)
-                                else SuccessGreen,
-                                startAngle = -90f,
-                                sweepAngle = 360f * progress,
-                                useCenter = false,
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(
-                                    width = 10f, cap = StrokeCap.Round
-                                )
-                            )
+        if (activeJourney != null) {
+            item { ActiveJourneyCard(activeJourney, state.pendingCheckIn != null, state.distanceToDestinationMeters, state.distanceFromRouteMeters, onOpenSafeWalk, onSafe = { vm.acknowledgeCheckIn() }, onHelp = { vm.requestHelp() }, onArrived = { vm.completeJourney() }, onCancel = { vm.cancelJourney() }) }
+        } else {
+            item {
+                Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Start a journey", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        OutlinedTextField(value = searchQuery, onValueChange = { searchQuery = it }, label = { Text("Search destination (OSM)") }, modifier = Modifier.fillMaxWidth(), singleLine = true, trailingIcon = {
+                            IconButton(onClick = {
+                                if (searchQuery.isBlank()) return@IconButton
+                                searching = true; formError = null
+                                scope.launch {
+                                    val res = RouteProvider.geocode(searchQuery)
+                                    searching = false
+                                    if (res != null) { destLat = res.first.toString(); destLng = res.second.toString(); if (destinationName.isBlank()) destinationName = searchQuery }
+                                    else formError = "Destination not found. Enter coordinates manually."
+                                }
+                            }) { if (searching) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Default.Search, null) }
+                        })
+                        OutlinedTextField(value = destinationName, onValueChange = { destinationName = it }, label = { Text("Destination name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(value = destLat, onValueChange = { destLat = it }, label = { Text("Dest lat") }, modifier = Modifier.weight(1f), singleLine = true)
+                            OutlinedTextField(value = destLng, onValueChange = { destLng = it }, label = { Text("Dest lng") }, modifier = Modifier.weight(1f), singleLine = true)
                         }
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = if (missedCheckIn) "Missed!"
-                                else "%d:%02d".format(checkInRemaining / 60, checkInRemaining % 60),
-                                fontSize = 30.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = if (missedCheckIn) SOSRed else TextPrimary
-                            )
-                            Text(
-                                "until next check-in",
-                                fontSize = 12.sp,
-                                color = TextSecondary
-                            )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(value = etaMinutes, onValueChange = { etaMinutes = it.filter(Char::isDigit) }, label = { Text("ETA (min)") }, modifier = Modifier.weight(1f), singleLine = true)
+                            OutlinedTextField(value = checkInMinutes, onValueChange = { checkInMinutes = it.filter(Char::isDigit) }, label = { Text("Check-in (min)") }, modifier = Modifier.weight(1f), singleLine = true)
                         }
-                    }
+                        OutlinedTextField(value = checkInTimeoutSec, onValueChange = { checkInTimeoutSec = it.filter(Char::isDigit) }, label = { Text("Check-in response timeout (sec)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                        val err = formError ?: state.error
+                        if (!err.isNullOrBlank()) Text(err, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
 
-                    if (missedCheckIn) {
-                        // Demo-only warning — real SOS is NOT triggered here
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = SOSRed.copy(alpha = 0.12f)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(Icons.Default.Warning, null, tint = SOSRed, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    "Check-in missed — guardians would be alerted (demo)",
-                                    fontSize = 12.sp,
-                                    color = SOSRed,
-                                    fontWeight = FontWeight.Medium
-                                )
+                        Button(onClick = {
+                            formError = null
+                            val missing = neededPerms.any { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
+                            if (missing) { permLauncher.launch(neededPerms); formError = "Grant location/notification permissions and try again."; return@Button }
+                            if (!hasLocationPerm()) { formError = "Location permission is required."; return@Button }
+                            if (!hasBackgroundLocationPerm() && !bgDisclosureShown) { showBgDisclosure = true; bgDisclosureShown = true; return@Button }
+                            val lat = destLat.toDoubleOrNull(); val lng = destLng.toDoubleOrNull()
+                            val etaMin = etaMinutes.toIntOrNull(); val ciMin = checkInMinutes.toIntOrNull(); val ciSec = checkInTimeoutSec.toIntOrNull()
+                            if (destinationName.isBlank()) { formError = "Destination name is required."; return@Button }
+                            if (lat == null || lng == null) { formError = "Valid destination coordinates are required."; return@Button }
+                            if (etaMin == null || etaMin <= 0) { formError = "ETA minutes must be positive."; return@Button }
+                            if (ciMin == null || ciMin <= 0) { formError = "Check-in interval must be positive."; return@Button }
+                            if (ciSec == null || ciSec < 30) { formError = "Check-in timeout must be at least 30 seconds."; return@Button }
+                            val expectedArrival = System.currentTimeMillis() + etaMin * 60_000L
+                            scope.launch {
+                                // Fetch route; if fails, engine still works with empty route (deviation disabled)
+                                @OptIn(ExperimentalCoroutinesApi::class)
+                                val current = com.example.nightagent.sos.LocationProvider.let { lp ->
+                                    kotlinx.coroutines.suspendCancellableCoroutine<Pair<Double, Double>?> { cont ->
+                                        lp.getLocation(context) { loc ->
+                                            if (cont.isActive) cont.resume(if (loc != null) loc.latitude to loc.longitude else null) {}
+                                        }
+                                    }
+                                }
+                                val route = if (current != null) RouteProvider.fetchWalkingRoute(current.first, current.second, lat, lng) else emptyList()
+                                vm.startJourney(destinationName.trim(), lat, lng, expectedArrival, ciMin, ciSec, route)
                             }
+                        }, modifier = Modifier.fillMaxWidth(), enabled = !state.isLoading) {
+                            if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
+                            else Text("Start Safe Journey")
                         }
-                        Spacer(modifier = Modifier.height(12.dp))
-                    }
-
-                    // Check-in button
-                    Button(
-                        onClick = { checkIn() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp),
-                        shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)
-                    ) {
-                        Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(22.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            "I'm Safe — Check In",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    OutlinedButton(
-                        onClick = onOpenSafeWalk,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Icon(Icons.Default.Map, null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Open live Safe Walk map")
                     }
                 }
             }
-
-            Spacer(modifier = Modifier.height(24.dp))
         }
 
-        // ── History ──────────────────────────────────────────────────────
-        item {
-            Text(
-                "Journey History",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            Spacer(modifier = Modifier.height(12.dp))
+        item { Spacer(Modifier.height(8.dp)); Text("Journey History", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+        if (history.isEmpty()) {
+            item { Text("No journeys yet.", color = TextSecondary, fontSize = 13.sp) }
+        } else {
+            items(history, key = { it.journeyId }) { j -> HistoryCard(j) }
         }
-
-        items(history.size) { index ->
-            JourneyHistoryCard(history[index])
-            Spacer(modifier = Modifier.height(10.dp))
-        }
-
-        item { Spacer(modifier = Modifier.height(100.dp)) }
+        item { Spacer(Modifier.height(100.dp)) }
     }
-}
 
-@Composable
-private fun RouteRow(place: String, icon: androidx.compose.ui.graphics.vector.ImageVector, tint: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, tint = tint, modifier = Modifier.size(18.dp))
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(place, fontSize = 14.sp, color = TextPrimary)
-    }
-}
-
-@Composable
-private fun JourneyStat(modifier: Modifier = Modifier, label: String, value: String) {
-    Surface(
-        modifier = modifier.padding(end = 8.dp),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surface
-    ) {
-        Column(
-            modifier = Modifier.padding(vertical = 12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(value, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = PurpleEnd)
-            Text(label, fontSize = 11.sp, color = TextSecondary)
-        }
-    }
-}
-
-@Composable
-private fun JourneyHistoryCard(journey: JourneyRecord) {
-    val statusColor = when (journey.status) {
-        "Ongoing" -> InfoBlue
-        "Completed with alert" -> SOSRed
-        else -> SuccessGreen
-    }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(statusColor.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    if (journey.status == "Ongoing") Icons.AutoMirrored.Filled.DirectionsWalk
-                    else Icons.Default.CheckCircle,
-                    null, tint = statusColor, modifier = Modifier.size(22.dp)
-                )
+    if (showBgDisclosure) {
+        AlertDialog(
+            onDismissRequest = { showBgDisclosure = false },
+            title = { Text("Background location access") },
+            text = {
+                Text("NightAgent uses background location during an active Safe Journey so your trusted safety features can keep tracking, check-ins, and emergency alerts working even if the app is closed. Location is used only for journey safety features. You can choose not to grant it, but tracking may stop when the app is in the background.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showBgDisclosure = false
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        showBgSettingsHint = true
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        bgLocationLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                    }
+                }) { Text("Continue") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBgDisclosure = false }) { Text("Not now") }
             }
-            Spacer(modifier = Modifier.width(14.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    "${journey.from} → ${journey.to}",
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp,
-                    color = TextPrimary,
-                    maxLines = 1
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    "${journey.date} · ${journey.distanceKm} km · ${journey.durationMin} min · ${journey.checkIns} check-ins",
-                    fontSize = 12.sp,
-                    color = TextSecondary
-                )
+        )
+    }
+
+    if (showBgSettingsHint) {
+        AlertDialog(
+            onDismissRequest = { showBgSettingsHint = false },
+            title = { Text("Allow background location") },
+            text = { Text("On Android 11+, background location must be granted from system settings. Choose \"Allow all the time\" for NightAgent location permission so Safe Journey tracking can continue in the background.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showBgSettingsHint = false
+                    val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = android.net.Uri.fromParts("package", context.packageName, null)
+                    }
+                    context.startActivity(intent)
+                }) { Text("Open settings") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBgSettingsHint = false }) { Text("Cancel") }
             }
-            Text(
-                journey.status,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                color = statusColor
-            )
+        )
+    }
+}
+
+@Composable
+private fun ActiveJourneyCard(j: Journey, pendingCheckIn: Boolean, distDest: Float?, distRoute: Float?, onOpenSafeWalk: () -> Unit, onSafe: () -> Unit, onHelp: () -> Unit, onArrived: () -> Unit, onCancel: () -> Unit) {
+    Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Lavender.copy(alpha = 0.18f))) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Journey in progress", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text("To: ${j.destinationName}", color = TextSecondary)
+            Text("ETA: ${fmtTime(j.expectedArrivalTime)}", fontSize = 13.sp)
+            distDest?.let { Text("Distance to destination: ${"%.0f".format(it)} m", fontSize = 13.sp) }
+            distRoute?.let { Text("Distance from route: ${"%.0f".format(it)} m", fontSize = 13.sp) }
+            if (pendingCheckIn) {
+                Text("Safety check-in pending", color = Color(0xFFFF9800), fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onSafe, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)) { Text("I'm Safe") }
+                    Button(onClick = onHelp, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = SOSRed)) { Text("I Need Help") }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onOpenSafeWalk, modifier = Modifier.weight(1f)) { Icon(Icons.Default.Map, null); Spacer(Modifier.width(4.dp)); Text("Live map") }
+                OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) { Text("Cancel") }
+            }
+            Button(onClick = onArrived, modifier = Modifier.fillMaxWidth()) { Text("I've arrived") }
         }
     }
 }
+
+@Composable
+private fun HistoryCard(j: Journey) {
+    val statusColor = when (j.statusEnum()) {
+        JourneyStatus.ACTIVE -> InfoBlue
+        JourneyStatus.COMPLETED -> SuccessGreen
+        JourneyStatus.EMERGENCY -> SOSRed
+        JourneyStatus.CANCELLED -> Color.Gray
+        else -> TextSecondary
+    }
+    Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(j.destinationName.ifBlank { "Journey" }, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text(j.status, color = statusColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            Text("Started: ${fmtTime(j.startedAt)}", fontSize = 12.sp, color = TextSecondary)
+            Text("ETA: ${fmtTime(j.expectedArrivalTime)}", fontSize = 12.sp, color = TextSecondary)
+        }
+    }
+}
+
+private fun fmtTime(ts: Long): String = if (ts <= 0) "-" else SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date(ts))

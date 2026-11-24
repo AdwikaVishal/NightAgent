@@ -23,17 +23,22 @@ object SOSManager {
 
     fun triggerSOS(
         context: Context,
+        reason: String? = null,
         onSOSComplete: () -> Unit = {}
     ) {
-        if (sosPending) return
+        if (sosPending) {
+            Log.w("TRACKING", "SOS already active; ignoring duplicate trigger reason=$reason")
+            return
+        }
         sosPending = true
 
-        Log.d("TRACKING", "SOS STARTED")
+        Log.d("TRACKING", "SOS STARTED reason=$reason")
 
         Toast.makeText(context, "SOS Triggered!", Toast.LENGTH_SHORT).show()
 
         if (!SafetySettings.silentMode.value) {
-            NotificationHelper.show(context, "SOS Triggered")
+            val notifText = if (reason.isNullOrBlank()) "SOS Triggered" else "SOS Triggered: $reason"
+            NotificationHelper.show(context, notifText)
             mediaPlayer = MediaPlayer.create(context, R.raw.alarm_sos)
             mediaPlayer?.isLooping = true
             mediaPlayer?.start()
@@ -44,17 +49,18 @@ object SOSManager {
 
             Log.d("TRACKING", "LOCATION CALLBACK HIT locationNull=${location == null}")
 
+            val reasonLine = if (reason.isNullOrBlank()) "" else "\nReason: ${reason.trim()}"
             val message = if (location != null) {
                 """🚨 SOS ALERT!
 
-I need help.
+I need help.$reasonLine
 
 My current location:
 https://maps.google.com/?q=${location.latitude},${location.longitude}"""
             } else {
                 """🚨 SOS ALERT!
 
-I need help."""
+I need help.$reasonLine"""
             }
 
 

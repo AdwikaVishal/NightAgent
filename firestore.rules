@@ -1,0 +1,131 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function journeyOwner(journeyId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/journeys/$(journeyId)).data.userId == request.auth.uid;
+    }
+
+    // Person 3: Safe Journey collections
+    match /journeys/{journeyId} {
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.journeyId == journeyId;
+
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+
+      allow update: if signedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == request.auth.uid;
+
+      allow delete: if signedIn() && resource.data.userId == request.auth.uid;
+
+      match /locations/{locationId} {
+        allow read, create, update, delete: if journeyOwner(journeyId);
+      }
+
+      match /checkins/{checkInId} {
+        allow read, create, update, delete: if journeyOwner(journeyId);
+      }
+
+      match /deviations/{eventId} {
+        allow read, create, update, delete: if journeyOwner(journeyId);
+      }
+
+      match /{subcollection}/{docId} {
+        allow read, write: if journeyOwner(journeyId);
+      }
+    }
+
+    // Legacy Safe Walk compatibility collection
+    match /safe_walks/{userId} {
+      allow read, write: if isOwner(userId);
+
+      match /{subcollection}/{docId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Baseline: no unauthenticated public access to other app collections.
+    // These rules are intentionally conservative and should be refined per collection
+    // by the owning feature team.
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+      match /{subcollection}/{docId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    match /sos_alerts/{alertId} {
+      allow read, write: if signedIn();
+      match /{subcollection}/{docId} {
+        allow read, write: if signedIn();
+      }
+    }
+
+    match /chats/{chatId} {
+      allow read, write: if signedIn();
+      match /{subcollection}/{docId} {
+        allow read, write: if signedIn();
+      }
+    }
+
+    match /sessions/{sessionId} {
+      allow read, write: if signedIn();
+      match /{subcollection}/{docId} {
+        allow read, write: if signedIn();
+      }
+    }
+
+    match /evidence/{evidenceId} {
+      allow read, write: if signedIn();
+      match /{subcollection}/{docId} {
+        allow read, write: if signedIn();
+      }
+    }
+
+    match /fcm_requests/{requestId} {
+      allow read, write: if signedIn();
+    }
+
+    match /sos_logs/{logId} {
+      allow read, write: if signedIn();
+      match /{subcollection}/{docId} {
+        allow read, write: if signedIn();
+      }
+    }
+
+    match /messages/{messageId} {
+      allow read, write: if signedIn();
+      match /{subcollection}/{docId} {
+        allow read, write: if signedIn();
+      }
+    }
+
+    match /locations/{locationId} {
+      allow read, write: if signedIn();
+      match /{subcollection}/{docId} {
+        allow read, write: if signedIn();
+      }
+    }
+
+    match /location_updates/{updateId} {
+      allow read, write: if signedIn();
+      match /{subcollection}/{docId} {
+        allow read, write: if signedIn();
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
