@@ -19,6 +19,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.LifecycleOwner
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import com.example.nightagent.model.SOSState
+import com.example.nightagent.sos.SOSManager
+import com.example.nightagent.sos.TriggerManager
 import com.example.nightagent.sos.EvidenceRecorder
 import com.example.nightagent.ui.components.*
 import com.example.nightagent.ui.theme.*
@@ -32,6 +37,13 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current as Context
     val lifecycleOwner = LocalLifecycleOwner.current as LifecycleOwner
+
+    val activeSession by SOSManager.engine.sessionState.collectAsState()
+    val isSessionActive = activeSession?.state in setOf(
+        SOSState.INITIATED,
+        SOSState.ACTIVE,
+        SOSState.ACKNOWLEDGED
+    )
 
     LazyColumn(
         modifier = Modifier
@@ -102,6 +114,35 @@ fun HomeScreen(
 
         item {
             SOSButton(onLongPress = onSOSClick)
+        }
+
+        if (isSessionActive) {
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Button(
+                        onClick = {
+                            TriggerManager.cancel(context, "Cancelled by user")
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "I'm safe – Cancel SOS",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                    }
+                }
+            }
         }
 
         item {

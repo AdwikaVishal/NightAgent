@@ -48,13 +48,18 @@ class EvidenceCaptureService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
-        when (intent?.action) {
-            ACTION_START -> {
-                sosId = intent.getStringExtra(EXTRA_SOS_ID) ?: System.currentTimeMillis().toString()
-                startForegroundCompat()
-                beginCapture()
+        try {
+            when (intent?.action) {
+                ACTION_START -> {
+                    sosId = intent.getStringExtra(EXTRA_SOS_ID) ?: System.currentTimeMillis().toString()
+                    startForegroundCompat()
+                    beginCapture()
+                }
+                ACTION_STOP -> endCapture()
             }
-            ACTION_STOP -> endCapture()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error in EvidenceCaptureService onStartCommand: ${e.message}")
+            stopSelf()
         }
         return START_NOT_STICKY
     }
@@ -69,15 +74,38 @@ class EvidenceCaptureService : LifecycleService() {
 
     private fun startForegroundCompat() {
         val notification = buildNotification("Recording audio & location…")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                var serviceType = 0
+                val hasAudio = ContextCompat.checkSelfPermission(
+                    this, android.Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+                if (hasAudio) {
+                    serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                }
+
+                val hasLocation = ContextCompat.checkSelfPermission(
+                    this, android.Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED ||
+                        ContextCompat.checkSelfPermission(
+                            this, android.Manifest.permission.ACCESS_COARSE_LOCATION
+                        ) == PackageManager.PERMISSION_GRANTED
+                if (hasLocation) {
+                    serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                }
+
+                if (serviceType != 0) {
+                    startForeground(NOTIFICATION_ID, notification, serviceType)
+                } else {
+                    Log.w(TAG, "No foreground service permissions granted — stopping evidence capture")
+                    stopSelf()
+                }
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to start foreground compat: ${e.message}")
+            stopSelf()
         }
     }
 
@@ -131,21 +159,44 @@ class EvidenceCaptureService : LifecycleService() {
         const val EXTRA_SOS_ID = "sos_id"
 
         fun start(context: Context, sosId: String) {
-            val intent = Intent(context, EvidenceCaptureService::class.java).apply {
-                action = ACTION_START
-                putExtra(EXTRA_SOS_ID, sosId)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                val hasAudio = ContextCompat.checkSelfPermission(
+                    context, android.Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+                val hasLocation = ContextCompat.checkSelfPermission(
+                    context, android.Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED ||
+                        ContextCompat.checkSelfPermission(
+                            context, android.Manifest.permission.ACCESS_COARSE_LOCATION
+                        ) == PackageManager.PERMISSION_GRANTED
+
+                if (!hasAudio && !hasLocation) {
+                    Log.w(TAG, "Skipping EvidenceCaptureService start: no audio or location permission")
+                    return
+                }
+
+                val intent = Intent(context, EvidenceCaptureService::class.java).apply {
+                    action = ACTION_START
+                    putExtra(EXTRA_SOS_ID, sosId)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to start EvidenceCaptureService: ${e.message}")
             }
         }
 
         fun stop(context: Context) {
-            context.startService(Intent(context, EvidenceCaptureService::class.java).apply {
-                action = ACTION_STOP
-            })
+            try {
+                context.startService(Intent(context, EvidenceCaptureService::class.java).apply {
+                    action = ACTION_STOP
+                })
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to stop EvidenceCaptureService: ${e.message}")
+            }
         }
     }
 }

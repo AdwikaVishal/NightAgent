@@ -13,6 +13,17 @@ import android.speech.SpeechRecognizer
 import android.util.Log
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+/**
+ * Manages keyword-based voice recognition for emergency SOS detection.
+ *
+ * Limitation note on background voice SOS:
+ * On Android 10+ (API 29+), continuous microphone recording from the background is heavily restricted
+ * by the OS (SecurityException without FOREGROUND_SERVICE_MICROPHONE + active user visibility),
+ * and running SpeechRecognizer / Google Speech Recognition service continuously in the background
+ * causes high battery drain, rapid audio buffer timeouts, and privacy policy rejection.
+ * Therefore, Voice SOS operates when the app is in the foreground, pausing in onPause and resuming
+ * in onResume while the toggle is enabled.
+ */
 class VoiceSOSManager(
     private val context: Context,
     private val onKeywordDetected: () -> Unit

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -17,6 +18,7 @@ import androidx.lifecycle.lifecycleScope
 
 import com.example.nightagent.navigation.NavGraph
 import com.example.nightagent.sos.*
+import com.example.nightagent.model.TriggerType
 import com.example.nightagent.firebase.AuthManager
 import com.example.nightagent.stealth.StealthDetectionService
 import com.example.nightagent.stealth.StealthRepository
@@ -30,24 +32,16 @@ import kotlinx.coroutines.tasks.await
 
 class MainActivity : ComponentActivity() {
 
-    private val smsPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (!granted) Toast.makeText(this, "SMS permission required", Toast.LENGTH_LONG).show()
+    private val multiplePermissionsLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+            if (results[Manifest.permission.SEND_SMS] == false) {
+                Toast.makeText(this, "SMS permission recommended for emergency alerts", Toast.LENGTH_SHORT).show()
+            }
         }
 
     private val locationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (!granted) Toast.makeText(this, "Location permission required", Toast.LENGTH_LONG).show()
-        }
-
-    private val cameraPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (!granted) Toast.makeText(this, "Camera permission required for evidence capture", Toast.LENGTH_LONG).show()
-        }
-
-    private val audioPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (!granted) Toast.makeText(this, "Microphone permission required for Voice SOS", Toast.LENGTH_LONG).show()
         }
 
     private lateinit var voiceSOS: VoiceSOSManager
@@ -60,11 +54,15 @@ class MainActivity : ComponentActivity() {
     // Draw content edge-to-edge so Compose controls all inset handling
     enableEdgeToEdge()
 
+    SafetySettings.init(this)
+    SOSManager.restoreUnfinishedSession(this)
+
     requestPermissionsIfNeeded()
 
-    // 🕵️ Resume StealthDetectionService if Stealth Mode was previously enabled
+    // 🕵️ Resume StealthDetectionService if Stealth Mode was previously enabled,
+    // or if Shake Detection toggle is enabled (so shake SOS functions in background / screen off)
     val stealthRepo = StealthRepository(this)
-    if (stealthRepo.isStealthModeEnabled.value) {
+    if (stealthRepo.isStealthModeEnabled.value || SafetySettings.shakeDetection.value) {
         StealthDetectionService.start(this)
     }
 
@@ -72,9 +70,10 @@ class MainActivity : ComponentActivity() {
     lifecycleScope.launch(Dispatchers.Main) {
         val result = AuthManager.loginAnonymous()
 
-        result.onSuccess {
-            Log.d("AUTH_TEST", "SUCCESS: $it")
-            Log.d("Auth", "User ID: $it")
+        result.onSuccess { uid ->
+            Log.d("AUTH_TEST", "SUCCESS: $uid")
+            Log.d("Auth", "User ID: $uid")
+            SOSManager.onAuthenticated(this@MainActivity, uid)
         }.onFailure {
             Log.e("AUTH_TEST", "FAIL: ${it.message}")
             Log.e("Auth", "Login failed: ${it.message}")
@@ -99,11 +98,11 @@ class MainActivity : ComponentActivity() {
         }
     }
         shakeDetector = ShakeDetector(this) {
-            SOSManager.triggerSOS(this)
+            TriggerManager.onTrigger(this, TriggerType.SHAKE)
         }
 
         voiceSOS = VoiceSOSManager(this) {
-            SOSManager.triggerSOS(this)
+            TriggerManager.onTrigger(this, TriggerType.VOICE)
         }
 
         // 🔥 Only enable if toggle is already ON (e.g. persisted from last session)
@@ -117,6 +116,18 @@ class MainActivity : ComponentActivity() {
                 .collect { isEnabled ->
                     Log.d("VoiceSOS", "Toggle changed → $isEnabled")
                     if (isEnabled) voiceSOS.enable() else voiceSOS.disable()
+                }
+        }
+
+        // 🔥 Observe shake toggle changes to start/stop background service if stealth is not active
+        lifecycleScope.launch {
+            snapshotFlow { SafetySettings.shakeDetection.value }
+                .collect { isEnabled ->
+                    if (isEnabled) {
+                        StealthDetectionService.start(this@MainActivity)
+                    } else if (!stealthRepo.isStealthModeEnabled.value) {
+                        StealthDetectionService.stop(this@MainActivity)
+                    }
                 }
         }
 
@@ -180,10 +191,21 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestPermissionsIfNeeded() {
-        if (!hasSmsPermission()) smsPermissionLauncher.launch(Manifest.permission.SEND_SMS)
-        if (!hasLocationPermission()) locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
-        if (!hasAudioPermission()) audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-        if (!hasCameraPermission()) cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        val permissions = buildList {
+            add(Manifest.permission.RECORD_AUDIO)
+            add(Manifest.permission.CAMERA)
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+            add(Manifest.permission.SEND_SMS)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (permissions.isNotEmpty()) {
+            multiplePermissionsLauncher.launch(permissions.toTypedArray())
+        }
     }
 
     private fun hasSmsPermission() =

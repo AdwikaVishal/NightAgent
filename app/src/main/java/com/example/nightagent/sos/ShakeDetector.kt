@@ -20,8 +20,13 @@ class ShakeDetector(
 
     private var lastShakeTime = 0L
     private var shakeCount = 0
+    private var lastTriggerTime = 0L
 
-    // 🔥 FILTER VARIABLES
+    companion object {
+        private const val COOLDOWN_MS = 2000L
+    }
+
+    // Filter variables
     private var lastX = 0f
     private var lastY = 0f
     private var lastZ = 0f
@@ -39,12 +44,11 @@ class ShakeDetector(
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-
         val x = event.values[0]
         val y = event.values[1]
         val z = event.values[2]
 
-        // 🔥 REMOVE GRAVITY EFFECT (difference)
+        // Remove gravity effect (difference)
         val deltaX = x - lastX
         val deltaY = y - lastY
         val deltaZ = z - lastZ
@@ -59,9 +63,8 @@ class ShakeDetector(
 
         val now = System.currentTimeMillis()
 
-        // 🔥 STRONG SHAKE ONLY
+        // Strong shake only
         if (acceleration > 18) {
-
             // Count shakes within short time
             if (now - lastShakeTime < 1000) {
                 shakeCount++
@@ -71,13 +74,13 @@ class ShakeDetector(
 
             lastShakeTime = now
 
-            // 🔥 REQUIRE MULTIPLE SHAKES
+            // Require multiple shakes
             if (shakeCount >= 2) {
-
                 shakeCount = 0
 
                 // Cooldown to prevent spam
-                if (now - lastShakeTime > 2000) return
+                if (now - lastTriggerTime < COOLDOWN_MS) return
+                lastTriggerTime = now
 
                 if (SafetySettings.shakeDetection.value) {
                     onShake()

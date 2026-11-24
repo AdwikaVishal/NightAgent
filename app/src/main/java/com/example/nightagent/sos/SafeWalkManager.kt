@@ -13,7 +13,9 @@ import kotlin.math.abs
 import com.example.nightagent.contacts.ContactManager
 import com.example.nightagent.repository.SafeWalkRepository
 import com.example.nightagent.model.LocationModel
+import com.example.nightagent.model.TriggerType
 import com.example.nightagent.sos.SOSManager
+import com.example.nightagent.sos.TriggerManager
 import com.example.nightagent.firebase.AuthManager
 import com.example.nightagent.sos.LocationProvider
 
@@ -201,7 +203,7 @@ https://maps.google.com/?q=${location.latitude},${location.longitude}
 
         Toast.makeText(context, "Unsafe: $reason", Toast.LENGTH_LONG).show()
 
-        SOSManager.triggerSOS(context)
+        TriggerManager.onTrigger(context, TriggerType.SAFE_WALK)
     }
     
     private fun triggerAutoSOS(context: Context, reason: String) {
@@ -213,7 +215,7 @@ https://maps.google.com/?q=${location.latitude},${location.longitude}
 
         Toast.makeText(context, "Deviation Alert: $reason", Toast.LENGTH_LONG).show()
 
-        SOSManager.triggerSOS(context)
+        TriggerManager.onTrigger(context, TriggerType.SAFE_WALK)
     }
 
     fun stopSafeWalk(context: Context) {

@@ -55,7 +55,7 @@ object LocationProvider {
             .addOnSuccessListener { location ->
                 cts.cancel()
                 if (location != null) {
-                    Log.d("LocationProvider", "Location: ${location.latitude}, ${location.longitude}")
+                    Log.d("LocationProvider", "Location received [REDACTED]")
                     callback(location)
                 } else {
                     Log.e("LocationProvider", "Location is NULL — GPS may be off")

@@ -1,25 +1,28 @@
 package com.example.nightagent.sos
 
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.widget.Toast
+import android.content.BroadcastReceiver
+import com.example.nightagent.model.TriggerType
 
 class PowerButtonReceiver : BroadcastReceiver() {
 
     private var pressCount = 0
     private var lastPressTime = 0L
 
-    override fun onReceive(context: Context, intent: Intent) {
+    companion object {
+        private const val PRESS_WINDOW_MS = 2000L
+    }
 
-        Toast.makeText(context, "Receiver triggered", Toast.LENGTH_SHORT).show()
+    override fun onReceive(context: Context, intent: Intent) {
+        SafetySettings.init(context)
 
         // Toggle check
         if (!SafetySettings.powerButtonSOS.value) return
 
         val now = System.currentTimeMillis()
 
-        if (now - lastPressTime < 2000) {
+        if (now - lastPressTime < PRESS_WINDOW_MS) {
             pressCount++
         } else {
             pressCount = 1
@@ -28,12 +31,8 @@ class PowerButtonReceiver : BroadcastReceiver() {
         lastPressTime = now
 
         if (pressCount >= 2) {
-
             pressCount = 0
-
-            Toast.makeText(context, "Power SOS triggered", Toast.LENGTH_SHORT).show()
-
-
+            TriggerManager.onTrigger(context, TriggerType.POWER_BUTTON)
         }
     }
 }
