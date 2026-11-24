@@ -80,7 +80,6 @@ fun EvidenceVaultScreen() {
                     color = TextSecondary
                 )
                 Spacer(modifier = Modifier.height(16.dp))
-                DemoBanner()
                 Spacer(modifier = Modifier.height(16.dp))
             }
 
