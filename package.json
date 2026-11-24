@@ -1,0 +1,19 @@
+{
+  "name": "nightagent-rules-tests",
+  "version": "1.0.0",
+  "description": "Firebase security rules unit tests for NightAgent",
+  "private": true,
+  "scripts": {
+    "test": "jest --config jest.config.js",
+    "test:firestore": "jest --config jest.config.js tests/rules/firestore.rules.test.js",
+    "test:storage": "jest --config jest.config.js tests/rules/storage.rules.test.js"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.0",
+    "jest": "^29.0.0",
+    "firebase-tools": "^13.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

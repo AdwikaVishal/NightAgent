@@ -7,6 +7,9 @@ import com.example.nightagent.voicemessage.model.MessageStatus
 import com.example.nightagent.voicemessage.model.UploadStatus
 import com.example.nightagent.voicemessage.model.UserProfile
 import com.example.nightagent.voicemessage.model.VoiceMessage
+import com.google.firebase.storage.StorageMetadata
+import com.google.firebase.functions.FirebaseFunctions
+import com.google.firebase.functions.HttpsCallableResult
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
@@ -118,14 +121,28 @@ object VoiceMessageFirebase {
     // ── Upload audio ──────────────────────────────────────────────────────────
 
     /**
-     * Upload an M4A/AAC file to Firebase Storage.
-     * Returns the public download URL on success.
+     * Upload an M4A/AAC file to Firebase Storage using the canonical chat-scoped path.
      *
-     * Storage path: voice_messages/{senderId}/{messageId}.m4a
+     * Storage path: voice_messages/{chatId}/{senderId}/{messageId}.m4a
+     *
+     * Metadata set on the object:
+     *   chatId    — canonical chat identifier (sorted UIDs joined by "_")
+     *   senderId  — uploading user's Firebase Auth UID
+     *   participants — JSON array of the two chat participant UIDs
+     *
+     * Security note: Storage metadata is client-supplied and is NOT verified
+     * against Firestore chat membership by Storage rules. The real authorization
+     * gate is Firestore — only chat participants can read the audioUrl from
+     * chats/{chatId}/messages/{msgId}. A leaked download URL is a bearer token;
+     * treat it accordingly.
+     *
+     * Returns the public download URL on success.
      */
     suspend fun uploadAudio(
         file: File,
+        chatId: String,
         senderId: String,
+        participants: List<String>,
         messageId: String,
         onProgress: (Int) -> Unit = {}
     ): Result<String> {
@@ -140,11 +157,20 @@ object VoiceMessageFirebase {
 
         return try {
             val ref = storage.reference
-                .child("voice_messages/$senderId/$messageId.m4a")
+                .child("voice_messages/$chatId/$senderId/$messageId.m4a")
 
             Log.d(TAG_UPLOAD, "Starting upload: ${file.name} (${file.length()} bytes)")
 
-            val uploadTask = ref.putStream(file.inputStream())
+            // Set Storage metadata for authorization tracing.
+            // chatId and senderId are also reflected in the object path.
+            val metadata = StorageMetadata.Builder()
+                .setCustomMetadata("chatId", chatId)
+                .setCustomMetadata("senderId", senderId)
+                .setCustomMetadata("participants", participants.joinToString(","))
+                .setContentType("audio/m4a")
+                .build()
+
+            val uploadTask = ref.putStream(file.inputStream(), metadata)
             uploadTask.addOnProgressListener { snap ->
                 val pct = if (snap.totalByteCount > 0)
                     (100.0 * snap.bytesTransferred / snap.totalByteCount).toInt()
@@ -365,6 +391,45 @@ object VoiceMessageFirebase {
         } catch (e: Exception) {
             Log.e(TAG_SYNC, "queuePushNotification failed: ${e.message}")
             // Non-fatal — message is in Firestore, receiver sees it on next open
+        }
+    }
+
+    // ── Get signed voice URL (secure download) ──────────────────────────
+
+    /**
+     * Requests a short-lived signed URL for a voice message from the backend.
+     *
+     * The Cloud Function `getSignedVoiceUrl` performs trusted server-side
+     * authorization:
+     *   1. Verifies the caller's Firebase ID token.
+     *   2. Reads the chat document from Firestore and verifies the caller is a participant.
+     *   3. Validates the message belongs to the chat.
+     *   4. Generates a short-lived signed URL (15 minutes) for the Storage object.
+     *
+     * This replaces direct use of the bearer-token download URL stored in
+     * Firestore, which could be leaked or shared outside the app.
+     *
+     * @param chatId   Canonical chat ID (sorted UIDs joined by "_")
+     * @param messageId Voice message document ID
+     * @return Signed URL string and expiration info
+     */
+    suspend fun getSignedVoiceUrl(chatId: String, messageId: String): Result<String> {
+        return try {
+            val functions = FirebaseFunctions.getInstance()
+            val callable = functions.getHttpsCallable("getSignedVoiceUrl")
+            val result: HttpsCallableResult = callable.call(
+                mapOf(
+                    "chatId"    to chatId,
+                    "messageId" to messageId,
+                )
+            )
+            val data = result.data as Map<String, *>
+            val signedUrl = data["signedUrl"] as String
+            Log.d(TAG_UPLOAD, "Signed voice URL obtained for message $messageId in chat $chatId")
+            Result.success(signedUrl)
+        } catch (e: Exception) {
+            Log.e(TAG_UPLOAD, "getSignedVoiceUrl failed: ${e.message}", e)
+            Result.failure(e)
         }
     }
 

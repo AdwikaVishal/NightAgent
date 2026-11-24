@@ -1,0 +1,120 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    const MAX_VOICE_MESSAGE_BYTES = 25 * 1024 * 1024; // 25 MB
+    const MAX_EVIDENCE_BYTES = 50 * 1024 * 1024;       // 50 MB
+
+    const VOICE_MESSAGE_CONTENT_TYPES = [
+      "audio/m4a",
+      "audio/aac",
+      "audio/mp4",
+      "audio/x-m4a"
+    ];
+
+    const EVIDENCE_CONTENT_TYPES = [
+      "audio/m4a",
+      "audio/aac",
+      "audio/mp4",
+      "audio/x-m4a",
+      "video/mp4",
+      "video/quicktime",
+      "video/x-msvideo"
+    ];
+
+    function validVoiceMetadata(metadata) {
+      return metadata.chatId is string &&
+             metadata.chatId.size() > 0 &&
+             metadata.senderId is string &&
+             metadata.senderId.size() > 0 &&
+             metadata.participants is list &&
+             metadata.participants.size() == 2 &&
+             metadata.participants.all(p, p is string && p.size() > 0);
+    }
+
+    // ── voice_messages/{chatId}/{senderId}/{messageId}.m4a ───────────────────
+    // Path structure includes chatId so Storage rules can reference it.
+    // Metadata must include: chatId, senderId, participants ([uid1, uid2]).
+    //
+    // Upload: sender uploads to their own senderId path with valid metadata.
+    // Read: only chat participants (from metadata) can download.
+    // Delete: only the sender can delete their own upload.
+    //
+    // NOTE: Android upload code must set storage metadata with
+    // chatId, senderId, and participants for these rules to work.
+    match /voice_messages/{chatId}/{senderId}/{messageId} {
+      // Upload (create only — no updates to voice message objects).
+      allow create: if isAuthenticated() &&
+                     isOwner(senderId) &&
+                     validVoiceMetadata(request.resource.metadata) &&
+                     request.resource.metadata.chatId == chatId &&
+                     request.resource.metadata.senderId == senderId &&
+                     request.auth.uid in request.resource.metadata.participants &&
+                     request.resource.size <= MAX_VOICE_MESSAGE_BYTES &&
+                     request.resource.contentType in VOICE_MESSAGE_CONTENT_TYPES;
+
+      // Read: only chat participants can download the voice message.
+      allow read: if isAuthenticated() &&
+                     resource.metadata != null &&
+                     validVoiceMetadata(resource.metadata) &&
+                     request.auth.uid in resource.metadata.participants;
+
+      // Delete: only the sender can delete their own upload.
+      allow delete: if isAuthenticated() &&
+                     resource.metadata != null &&
+                     resource.metadata.senderId == request.auth.uid;
+
+      // Updates are not supported for voice message objects.
+      allow update: if false;
+    }
+
+    // ── voice_messages/{senderId}/{messageId} ────────────────────────────────
+    // LEGACY PATH — pre-remediation uploads used this path with no chatId and
+    // no Storage metadata. Old objects cannot be verified against chat
+    // membership because Storage rules cannot query Firestore.
+    //
+    // Narrow rule: only the original sender (uid matching path variable) can
+    // read their own legacy messages. This prevents cross-user access and
+    // avoids broad authenticated-user access. Receivers cannot read legacy
+    // messages; those must be re-uploaded via the canonical path (see migration
+    // plan in STORAGE_INTEGRATION_AUDIT.md Section 5).
+    //
+    // Create/update/delete are prohibited on the legacy path.
+    match /voice_messages/{senderId}/{messageId} {
+      allow read: if isAuthenticated() && request.auth.uid == senderId;
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ── evidence/{userId}/{allPaths=**} ──────────────────────────────────────
+    // Evidence: owner-only upload, read, and delete. No public access.
+    // Guardian access is a future controlled mechanism (not implemented here).
+    match /evidence/{userId}/{allPaths=**} {
+      allow create: if isOwner(userId) &&
+                     request.resource.size <= MAX_EVIDENCE_BYTES &&
+                     request.resource.contentType in EVIDENCE_CONTENT_TYPES;
+
+      allow read: if isOwner(userId);
+
+      allow delete: if isOwner(userId);
+
+      allow update: if false;
+    }
+
+    // ── Catch-all: deny everything else ──────────────────────────────────────
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

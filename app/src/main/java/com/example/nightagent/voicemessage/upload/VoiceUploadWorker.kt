@@ -40,6 +40,8 @@ class VoiceUploadWorker(
         val messageId  = inputData.getString(KEY_MESSAGE_ID)  ?: return Result.failure()
         val senderId   = inputData.getString(KEY_SENDER_ID)   ?: return Result.failure()
         val receiverId = inputData.getString(KEY_RECEIVER_ID) ?: return Result.failure()
+        val chatId     = inputData.getString(KEY_CHAT_ID)     ?: return Result.failure()
+        val participants = inputData.getString(KEY_PARTICIPANTS) ?: return Result.failure()
         val durationMs = inputData.getLong(KEY_DURATION_MS, 0L)
         val fileSize   = inputData.getLong(KEY_FILE_SIZE, 0L)
 
@@ -49,12 +51,14 @@ class VoiceUploadWorker(
             return Result.failure()
         }
 
-        Log.d(TAG, "Worker starting: msgId=$messageId attempt=$runAttemptCount")
+        Log.d(TAG, "Worker starting: msgId=$messageId attempt=$runAttemptCount chatId=$chatId")
 
         // ── Step 1: Upload to Firebase Storage ───────────────────────────────
         val uploadResult = VoiceMessageFirebase.uploadAudio(
             file       = file,
+            chatId     = chatId,
             senderId   = senderId,
+            participants = participants.split(",").filter { it.isNotEmpty() },
             messageId  = messageId,
             onProgress = { pct ->
                 setProgressAsync(workDataOf(KEY_PROGRESS to pct))
@@ -67,6 +71,7 @@ class VoiceUploadWorker(
         }
 
         val audioUrl = uploadResult.getOrThrow()
+        // cid already known from input; recompute for consistency
         val cid = VoiceMessageFirebase.chatId(senderId, receiverId)
 
         // ── Step 2: Ensure chat room exists ──────────────────────────────────
@@ -118,6 +123,8 @@ class VoiceUploadWorker(
         const val KEY_MESSAGE_ID  = "message_id"
         const val KEY_SENDER_ID   = "sender_id"
         const val KEY_RECEIVER_ID = "receiver_id"
+        const val KEY_CHAT_ID     = "chat_id"
+        const val KEY_PARTICIPANTS = "participants"
         const val KEY_DURATION_MS = "duration_ms"
         const val KEY_FILE_SIZE   = "file_size"
         const val KEY_PROGRESS    = "progress"
@@ -132,6 +139,8 @@ class VoiceUploadWorker(
             messageId: String,
             senderId: String,
             receiverId: String,
+            chatId: String,
+            participants: List<String>,
             durationMs: Long,
             fileSize: Long = 0L
         ) {
@@ -140,6 +149,8 @@ class VoiceUploadWorker(
                 KEY_MESSAGE_ID  to messageId,
                 KEY_SENDER_ID   to senderId,
                 KEY_RECEIVER_ID to receiverId,
+                KEY_CHAT_ID     to chatId,
+                KEY_PARTICIPANTS to participants.joinToString(","),
                 KEY_DURATION_MS to durationMs,
                 KEY_FILE_SIZE   to fileSize
             )
@@ -171,7 +182,7 @@ class VoiceUploadWorker(
                     request
                 )
 
-            Log.d(TAG, "Enqueued background upload: msgId=$messageId")
+            Log.d(TAG, "Enqueued background upload: msgId=$messageId chatId=$chatId")
         }
     }
 }

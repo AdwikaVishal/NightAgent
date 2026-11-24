@@ -257,11 +257,16 @@ class VoiceMessageViewModel(
             val tempId = "pending_${System.currentTimeMillis()}"
             _uploadProgress.value = _uploadProgress.value + (tempId to 0)
 
+            val cid = VoiceMessageFirebase.chatId(uid, rid)
+            val participants = listOf(uid, rid)
+
             val sendResult = repository.sendVoiceMessage(
                 file       = result.file,
                 durationMs = result.durationMs,
                 senderId   = uid,
                 receiverId = rid,
+                chatId     = cid,
+                participants = participants,
                 onProgress = { pct ->
                     _uploadProgress.value = _uploadProgress.value + (tempId to pct)
                 }
@@ -284,12 +289,23 @@ class VoiceMessageViewModel(
             Log.w(TAG, "togglePlayback: audioUrl is blank for ${message.messageId}")
             return
         }
-        player.playOrPause(message.messageId, message.audioUrl, viewModelScope)
+        viewModelScope.launch {
+            val signedUrlResult = VoiceMessageFirebase.getSignedVoiceUrl(
+                chatId = message.chatId,
+                messageId = message.messageId,
+            )
+            if (signedUrlResult.isFailure) {
+                val msg = signedUrlResult.exceptionOrNull()?.message ?: "Unknown error"
+                Log.e(TAG, "Failed to get signed URL: $msg")
+                _screenState.value = ChatScreenState.Error("Unable to load voice message")
+                return@launch
+            }
+            val signedUrl = signedUrlResult.getOrThrow()
+            player.playOrPause(message.messageId, signedUrl, viewModelScope)
 
-        // Mark as seen when receiver plays
-        if (message.receiverId == _currentUid.value &&
-            message.messageStatus != MessageStatus.SEEN) {
-            viewModelScope.launch {
+            // Mark as seen when receiver plays
+            if (message.receiverId == _currentUid.value &&
+                message.messageStatus != MessageStatus.SEEN) {
                 repository.markMessageSeen(_chatId.value, message.messageId)
             }
         }

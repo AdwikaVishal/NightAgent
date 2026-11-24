@@ -1,180 +1,224 @@
-# NightAgent — Security & Privacy Audit
+# NightAgent — Security Audit (Person 6: Firebase Security Focus)
 
-Severity classes: CRITICAL / HIGH / MEDIUM / LOW / INFORMATIONAL.
-No actual secret values are reproduced; the `google-services.json` API key is
-referenced only by presence, not value.
+**Scope:** Firebase Auth, Firestore, Storage, FCM, Cloud Functions security rules and client-side security. Builds on the existing `audit/SECURITY_AUDIT.md` (findings S-01 to S-10) which remains valid.
 
----
+**Severity:** CRITICAL / HIGH / MEDIUM / LOW / INFORMATIONAL.
 
-## S-01: Firebase API key checked into version control — CRITICAL
-
-**Evidence:** `app/google-services.json` contains an `api_key.current_key`
-value (a live Firebase/Android API key) and is committed to the repo. The file
-is part of the Android build and is read at runtime by Firebase SDKs.
-
-**Risk:** Anyone with repo access can extract the key. While Firebase API keys
-are not, by themselves, secrets for server access, they can be used for
-quota abuse, fingerprinting the Firebase project, and targeted attacks
-against Firebase Auth/FCM endpoints.
-
-**Remediation:** Add `google-services.json` to `.gitignore`; inject it at
-build time via CI secrets or a gradle plugin; rotate the exposed key in the
-Firebase Console.
+**Method:** Source inspection only. No security-rules files exist in the repo, so Firestore/Storage are presumed in test/open mode (unverified at runtime — no SDK to confirm).
 
 ---
 
-## S-02: `allowBackup="true"` — HIGH
+## Summary of existing findings (carried forward)
 
-**Evidence:** `app/src/main/AndroidManifest.xml:29`
-`android:allowBackup="true"` with no restrictive `backup_rules.xml` includes
-(the file is empty/commented out).
-
-**Risk:** ADB backup can extract app private data (SharedPreferences,
-including potentially sensitive PIN-related stealth state and location
-history) from a rooted/debug-enabled device.
-
-**Remediation:** Set `android:allowBackup="false"` for release builds; define
-explicit `android:fullBackupContent` exclusions for sensitive preferences.
-
----
-
-## S-03: Sensitive data logged to Logcat — HIGH
-
-**Evidence:**
-- `sos/SOSManager.kt` logs emergency SMS message body and per-contact phone:
-  `Log.d("TRACKING", "Attempting SMS to phone=$phone messageLen=...")` and
-  `"SMS FAILED to $phone ... msg=${e.message}"` (lines 159, 202).
-- `sos/SOSManager.kt` logs `"LOCATION CALLBACK HIT"` and coordinates
-  indirectly via `LocationProvider.getLocation` logs (`Log.d("LocationProvider",
-  "Location: ${lat}, ${lng}")`).
-- `streaming/CallViewModel.kt` and others log UIDs/callIds.
-
-**Risk:** On a rooted device or via `adb logcat`, an attacker can read phone
-numbers, message contents, approximate locations, and user UIDs. Logcat is
-world-readable on many devices.
-
-**Remediation:** Remove or guard PII/location logging behind `Build.DEBUG`;
-use a proper logging framework that redacts sensitive fields in release.
+| ID | Severity | Finding | Source |
+|----|----------|---------|--------|
+| S-01 | CRITICAL | Firebase API key checked into git (`app/google-services.json`) | `app/google-services.json:18` |
+| S-02 | HIGH | `android:allowBackup="true"` with no restrictive backup rules | `AndroidManifest.xml:29` |
+| S-03 | HIGH | PII/location/UIDs logged to Logcat | `sos/SOSManager.kt`, `sos/LocationProvider.kt`, `streaming/CallViewModel.kt` |
+| S-04 | MEDIUM | No network security config; cleartext risk | `AndroidManifest.xml` (no `networkSecurityConfig`) |
+| S-05 | MEDIUM | Exported `MainActivity` with unvalidated deep-link `navigate_to`; duplicate `PowerButtonReceiver` | `AndroidManifest.xml:72-76`, `MainActivity.kt` |
+| S-06 | LOW | PendingIntent immutability (correctly mitigated) | `MyFirebaseMessagingService.kt:58-60` |
+| S-07 | MEDIUM | Location in SMS + Firestore, no retention, no owner-only rules | `FirestoreManager.kt`, `SOSManager.kt` |
+| S-08 | LOW | PIN plaintext comparison (acceptable given encrypted-at-rest) | `stealth/StealthRepository.kt` |
+| S-09 | LOW | Dead `EvidenceUploader` with `Uri.fromFile` risk if invoked | `sos/EvidenceUploader.kt` |
+| S-10 | INFORMATIONAL | Dependency versions need scanning (Firebase BOM 32.7.0, etc.) | `app/build.gradle.kts` |
 
 ---
 
-## S-04: No network security config / cleartext risk — MEDIUM
+## NEW: Firebase-specific security gaps (Person 6 scope)
 
-**Evidence:** No `android:networkSecurityConfig` referenced in the manifest.
-`network/NetworkModule` uses `https://your-backend-domain.com()` (placeholder,
-unused). `SafetyRepository` calls `https://overpass-api.de/...` over HTTPS.
-Firebase SDKs use TLS by default.
+### F-01: No Firestore security rules — CRITICAL
 
-**Risk:** If the placeholder base URL is ever pointed at a real HTTP backend,
-all traffic would be cleartext. No certificate pinning for the Overpass API
-or any custom backend.
+**Evidence:** No `firestore.rules` file anywhere in the repo. `FirebaseConfig.firestore` is obtained via `FirebaseFirestore.getInstance()` with no rules enforcement visible. All collections (`users`, `chats`, `chats/{chatId}/messages`, `sos_alerts`, `safe_walks`, `fcm_requests`) are readable/writable by anyone if the project is in test mode.
 
-**Remediation:** Add a Network Security Config enforcing `cleartextTrafficPermitted="false"`;
-consider certificate pinning for any custom backend.
+**Risk:** Any user (or unauthenticated client with the API key) can read all user profiles, phone numbers, FCM tokens, SOS locations, and voice messages. SOS location data (written every 5 s) is exposed.
 
----
+**Required rules (proposed):**
+- `users/{uid}`: read/write only by `auth.uid == uid`.
+- `chats/{chatId}`: read only if `auth.uid in resource.data.participants`; write only by participants.
+- `chats/{chatId}/messages/{msgId}`: create only by `auth.uid == request.resource.data.senderId`; read by participants; update `messageStatus` only by `receiverId`.
+- `sos_alerts/{uid}/...`: read/write only by `auth.uid == uid`.
+- `safe_walks/{userId}/...`: read/write only by `auth.uid == userId`.
+- `fcm_requests/{reqId}`: create only by authenticated users; read/delete only by service account (Cloud Function).
 
-## S-05: Exported activities / receivers — MEDIUM
-
-**Evidence:**
-- `CalculatorActivity` is `android:exported="true"` with `MAIN/LAUNCHER`
-  intent filter (`AndroidManifest.xml:59-69`) — intentional disguise.
-- `MainActivity` is `android:exported="true"` to accept FCM deep links
-  (`AndroidManifest.xml:72-76`).
-- `PowerButtonReceiver` is `exported="false"` but registered for
-  `SCREEN_ON`/`SCREEN_OFF` both in manifest and dynamically in `MainActivity`
-  (duplicate registration).
-
-**Risk:** An exported `MainActivity` with a deep-link extra `navigate_to`
-allows any app to trigger navigation into internal routes (e.g.
-`voicechat/{senderId}`) without validation. Duplicate broadcast registration
-can cause multiple `PowerButtonReceiver` instances.
-
-**Remediation:** Validate deep-link route strings against an allowlist before
-navigating. Remove one of the two `PowerButtonReceiver` registrations.
+**Acceptance criteria:** `firestore.rules` file exists; unit-tested against Firebase Emulator; no `allow read, write: if true` rules remain.
 
 ---
 
-## S-06: PendingIntent mutability — LOW (already mitigated)
+### F-02: No Storage security rules — CRITICAL
 
-**Evidence:** `MyFirebaseMessagingService.kt:58-60` uses
-`PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT`.
+**Evidence:** No `storage.rules` file. Uploads to `voice_messages/{senderId}/{messageId}.m4a` and `evidence/{userId}/...` are not rules-protected.
 
-**Status:** Correct for Android 12+. No action needed.
+**Risk:** Anyone can upload arbitrary files to Firebase Storage (quota abuse, malicious content) or download voice messages/evidence by guessing paths.
 
----
+**Required rules (proposed):**
+- `voice_messages/{senderId}/{messageId}.m4a`: write only if `request.auth.uid == senderId`; read only if sender or receiver (needs chat doc check — Storage rules can't query Firestore; consider signed URLs or a read proxy).
+- `evidence/{userId}/...`: write only if `request.auth.uid == userId`; max file size limit (e.g. 50 MB); content-type validation (audio/video only).
 
-## S-07: Location data in SMS and Firestore — MEDIUM (privacy)
-
-**Evidence:** `SOSManager.sendEmergencySMS` embeds a Google Maps link with the
-user's latitude/longitude in the SMS body (`SOSManager.kt:47-58`). `FirestoreManager.updateLocation`
-writes lat/lng/time to Firestore on every 5 s poll.
-
-**Risk:** Location is shared with emergency contacts (intended) but also
-persisted long-term in Firestore with no retention policy, no access-control
-rules visible in the client, and no option to delete history.
-
-**Remediation:** Add Firestore security rules restricting read/write to the
-owner UID; add a data-retention/cleanup policy; let users disable location
-sharing (the `locationSharing` toggle exists but is not wired).
+**Acceptance criteria:** `storage.rules` exists; emulator-tested; file size/type limits enforced.
 
 ---
 
-## S-08: Stealth PIN stored encrypted but verified by plaintext comparison — LOW
+### F-03: FCM token exposed to any chat participant — HIGH
 
-**Evidence:** `stealth/StealthRepository.kt` uses `EncryptedSharedPreferences`
-(AES256-GCM master key via Android Keystore) — good. But `verifyPin` compares
-`saved == inputPin` directly (`StealthRepository.kt:39`).
+**Evidence:** `users/{uid}/fcmToken` is written by `AuthManager.saveFCMToken()` and `VoiceMessageFirebase.updateFcmToken()`. `VoiceMessageFirebase.queuePushNotification()` reads the receiver's token from `users/{receiverUid}` and writes it to `fcm_requests/{auto-id}` — a collection any authenticated user can read (no rules).
 
-**Risk:** Plaintext PIN comparison in memory is standard for local PIN
-verification; acceptable given encrypted at rest. Rate limiting (5 attempts /
-60 s lockout) is present (`isLockedOut`, `lockoutRemainingSeconds`).
+**Risk:** A malicious user can harvest FCM tokens of other users by reading `fcm_requests` or `users` docs, enabling targeted push spam or token-based attacks.
 
-**Status:** Acceptable. No change required.
+**Mitigation:** Restrict `users/{uid}/fcmToken` read to the owner only; `fcm_requests` write-only for clients, read/delete only by the Cloud Function service account.
 
 ---
 
-## S-09: External file URIs in EvidenceUploader — LOW (dead code)
+### F-04: No data retention / TTL for SOS locations — MEDIUM
 
-**Evidence:** `sos/EvidenceUploader.kt:24` builds `Uri.fromFile(file)` and
-references `Environment.DIRECTORY_MUSIC/evidence_recording.3gp`. This code is
-dead (never invoked) and references a path that doesn't match where evidence
-is actually saved.
+**Evidence:** `FirestoreManager.updateLocation()` writes lat/lng/time every 5 s to `sos_alerts/{uid}/sessions/{sessionId}/location_updates`. `SafeWalkRepository` writes every 5 s to `safe_walks/{userId}/locations`. No TTL, no cleanup, no deletion option.
 
-**Risk:** If ever invoked on Android 7–9, `Uri.fromFile` could expose a
-file:// URI; on Android 10+ it may throw FileUriExposedException under strict
-mode. Because it's dead, risk is theoretical.
+**Risk:** Indefinite storage of precise location history; privacy exposure if account is compromised; storage cost growth.
 
-**Remediation:** Remove dead code (see roadmap).
+**Required:** Cloud Function scheduled cleanup (e.g. delete docs older than 7–30 days) or client-side TTL. **Confirm retention window with product.**
 
 ---
 
-## S-10: Dependencies — INFORMATIONAL
+### F-05: Phone-number enumeration via `whereEqualTo` — MEDIUM
 
-No dependency-vulnerability scan was possible (no network/ODC tooling and no
-Android SDK to run `./gradlew dependencies:analyze`). Notable versions in
-`app/build.gradle.kts`:
-- Firebase BOM 32.7.0 (2023-era)
-- WebRTC android 125.6422.06.1
-- CameraX 1.3.4, Retrofit 2.11.0, OkHttp logging 4.12.0, WorkManager 2.9.0,
-  Coroutines 1.8.1, Compose BOM (version managed by BOM)
+**Evidence:** `VoiceMessageFirebase.findUidByPhone()` queries `users` where `phoneNumber == ...`. Without rules restricting this, an attacker can enumerate registered phone numbers.
 
-**Recommendation:** Run `./gradlew :app:dependencies` and an OWASP
-Dependency-Check scan once an SDK is available.
+**Mitigation:** Owner-only read on `users`; phone lookup should be rate-limited or require auth. Consider whether phone→UID lookup needs to be public at all.
 
 ---
 
-## Severity summary
+### F-06: Deep-link route injection — MEDIUM (carried from S-05)
 
-| ID | Severity | Finding |
-|---|---|---|
-| S-01 | CRITICAL | Firebase API key in google-services.json (committed) |
-| S-02 | HIGH | allowBackup="true" |
-| S-03 | HIGH | PII/location logged to Logcat |
-| S-04 | MEDIUM | No network security config |
-| S-05 | MEDIUM | Exported MainActivity + deep link, duplicate receiver |
-| S-07 | MEDIUM | Location in SMS/Firestore, no retention |
-| S-06 | LOW | PendingIntent immutability (ok) |
-| S-08 | LOW | PIN plaintext compare (acceptable) |
-| S-09 | LOW | Dead EvidenceUploader (file URI risk if used) |
-| S-10 | INFORMATIONAL | Dependency versions need scanning |
+**Evidence:** `MyFirebaseMessagingService` builds an Intent with `putExtra("navigate_to", "voicechat/$senderId")`; `MainActivity` is `android:exported="true"` and accepts the extra; `NavGraph` navigates to `voicechat/{otherUserId}` without validating the route string.
+
+**Risk:** Any app can send a broadcast/intent with a crafted `navigate_to` to open internal routes. While `voicechat/{id}` is relatively benign, the pattern is unsafe.
+
+**Mitigation:** Validate `navigate_to` against an allowlist of route prefixes in `MainActivity` before navigating.
+
+---
+
+### F-07: `google-services.json` API key in version control — CRITICAL (carried from S-01)
+
+**Evidence:** `app/google-services.json:18` contains `current_key: "AIzaSyBMo2a3e5Pb3xKU2c-4WZwLym6LazFLiuQ"` committed to git.
+
+**Risk:** Quota abuse, project fingerprinting, targeted Firebase Auth/FCM attacks.
+
+**Mitigation:** Add `google-services.json` to `.gitignore`; inject at build time via CI secrets or Gradle; rotate the exposed key in Firebase Console.
+
+---
+
+### F-08: No certificate pinning / network security config — MEDIUM (carried from S-04)
+
+**Evidence:** No `android:networkSecurityConfig`. Retrofit `NetworkModule` points to placeholder `https://your-backend-domain.com/` (unused). Overpass API called over raw HTTPS with no pinning.
+
+**Risk:** If placeholder URL is activated without TLS enforcement, cleartext traffic.
+
+**Mitigation:** Add network security config with `cleartextTrafficPermitted="false"`; consider pinning for any custom backend.
+
+---
+
+## Security rules template (proposed — to be created)
+
+### `firestore.rules` (new file)
+
+```rules
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users: owner-only
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+    // Chats: participants only
+    match /chats/{chatId} {
+      allow read: if request.auth != null && request.auth.uid in resource.data.participants;
+      allow create: if request.auth != null && request.auth.uid in request.resource.data.participants;
+      allow update: if request.auth != null && request.auth.uid in resource.data.participants;
+    }
+    // Messages: sender creates, participants read, receiver marks seen
+    match /chats/{chatId}/messages/{messageId} {
+      allow read: if request.auth != null && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.senderId;
+      allow update: if request.auth != null && request.auth.uid == resource.data.receiverId
+                    && request.resource.data.messageStatus == "SEEN";
+    }
+    // SOS alerts: owner only
+    match /sos_alerts/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+    // Safe walks: owner only
+    match /safe_walks/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    // FCM requests: clients write only; function reads/deletes
+    match /fcm_requests/{reqId} {
+      allow create: if request.auth != null;
+      allow read, delete: if false; // service account bypasses via Admin SDK
+    }
+  }
+}
+```
+
+### `storage.rules` (new file)
+
+```rules
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /voice_messages/{senderId}/{messageId}.m4a {
+      allow write: if request.auth != null && request.auth.uid == senderId;
+      allow read: if request.auth != null; // tighten after confirming receiver access pattern
+    }
+    match /evidence/{userId}/{allPaths=**} {
+      allow write: if request.auth != null && request.auth.uid == userId
+                   && request.resource.size <= 50 * 1024 * 1024; // 50 MB cap
+    }
+  }
+}
+```
+
+---
+
+## Client-side security checklist
+
+| Item | Status | File | Action |
+|------|--------|------|--------|
+| `google-services.json` not in git | ❌ Missing | `app/google-services.json`, `.gitignore` | Add to gitignore; inject via CI |
+| `allowBackup="false"` | ❌ Missing | `AndroidManifest.xml:29` | Set false for release |
+| No PII in Logcat | ❌ Missing | `sos/SOSManager.kt`, `sos/LocationProvider.kt` | Guard logs behind `Build.DEBUG` |
+| Network security config | ❌ Missing | `AndroidManifest.xml` | Add `networkSecurityConfig` |
+| Deep-link validation | ❌ Missing | `MainActivity.kt` | Allowlist `navigate_to` routes |
+| PendingIntent immutable | ✅ OK | `MyFirebaseMessagingService.kt:58-60` | No change |
+| EncryptedSharedPreferences (PIN) | ✅ OK | `stealth/StealthRepository.kt` | No change |
+| Storage size/content limits | ❌ Missing | — | Add via `storage.rules` |
+| Firestore owner-only rules | ❌ Missing | — | Create `firestore.rules` |
+| FCM token access control | ❌ Missing | — | Restrict `users/{uid}/fcmToken` read |
+
+---
+
+## Prioritized security remediation (Person 6)
+
+| ID | Task | Severity | File paths | Acceptance criteria |
+|----|------|----------|------------|---------------------|
+| SEC-1 | Rotate Firebase API key; remove `google-services.json` from git; inject at build time | CRITICAL | `.gitignore`, `app/google-services.json`, CI | Key not tracked; new key in Console |
+| SEC-2 | Create `firestore.rules` (owner-only for users/chats/messages/sos/safe_walks) | CRITICAL | `firestore.rules` (new) | Emulator tests pass; no open rules |
+| SEC-3 | Create `storage.rules` (authenticated upload, path-scoped, size limits) | CRITICAL | `storage.rules` (new) | Emulator tests pass; size cap enforced |
+| SEC-4 | Restrict `fcm_requests` read/delete to service account; clients write-only | HIGH | `firestore.rules`, `functions/src/index.ts` | Only function can read/delete |
+| SEC-5 | Set `allowBackup="false"` + backup rules exclusions | HIGH | `AndroidManifest.xml`, `res/xml/backup_rules.xml` | Release manifest has `allowBackup="false"` |
+| SEC-6 | Remove PII/location logging in release | HIGH | `sos/SOSManager.kt`, `sos/LocationProvider.kt` | No phone/location/UID in release Logcat |
+| SEC-7 | Add network security config (no cleartext) | MEDIUM | `res/xml/network_security_config.xml`, `AndroidManifest.xml` | `cleartextTrafficPermitted="false"` |
+| SEC-8 | Validate deep-link `navigate_to` against allowlist | MEDIUM | `MainActivity.kt` | Unknown routes rejected |
+| SEC-9 | Add data retention/TTL for SOS + safe-walk locations | MEDIUM | `functions/src/` (scheduled function) or client cleanup | Old docs auto-delete after retention |
+| SEC-10 | Dependency vulnerability scan | INFORMATIONAL | `app/build.gradle.kts` | OWASP Dependency-Check run |
+
+---
+
+## Missing confirmations (team)
+
+| Item | Why | Confirmation needed |
+|------|-----|---------------------|
+| Firestore project mode | Are rules currently disabled (test mode)? | Confirm Firestore/Storage are in locked mode before deploying rules |
+| Retention window | SOS/safe-walk location TTL | How many days to keep location history? |
+| GCM/FCM token access | Who reads `users/{uid}/fcmToken` besides owner? | Can guardians look up tokens, or only the Cloud Function? |
+| API key rotation | `google-services.json` has live key | Who owns Firebase project `nightagent-35d38` to rotate? |
+| Cloud Function service account | `fcm_requests` read/delete by Admin SDK | Which service account deploys/runs the function? |

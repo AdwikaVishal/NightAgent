@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.work.*
 import com.example.nightagent.firebase.FirebaseConfig
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.storage.StorageMetadata
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -47,8 +48,15 @@ class EvidenceUploadWorker(
                     val relativePath = file.relativeTo(evidenceDir).path
                     val storagePath  = "evidence/$userId/$sosId/$relativePath"
 
+                    val contentType = contentTypeForFile(file) ?: run {
+                        Log.w(TAG, "Skipping $relativePath: unsupported extension '${file.extension}'")
+                        return@forEach
+                    }
+                    val metadata = StorageMetadata.Builder()
+                        .setContentType(contentType)
+                        .build()
                     val storageRef = FirebaseConfig.storage.reference.child(storagePath)
-                    val snapshot   = storageRef.putFile(android.net.Uri.fromFile(file)).await()
+                    val snapshot   = storageRef.putStream(file.inputStream(), metadata).await()
                     val url        = snapshot.storage.downloadUrl.await().toString()
 
                     uploadedUrls[relativePath] = url
@@ -83,6 +91,24 @@ class EvidenceUploadWorker(
         private const val TAG         = "EvidenceUploadWorker"
         const val KEY_SOS_ID          = "sos_id"
         const val KEY_USER_ID         = "user_id"
+
+        /**
+         * Resolve a Firebase Storage content type from a file's extension.
+         * Returns null for unrecognized extensions so that the upload is
+         * denied rather than falling back to a permissive type like
+         * application/octet-stream.
+         */
+        fun contentTypeForFile(file: File): String? {
+            val ext = file.extension.lowercase()
+            return when (ext) {
+                "m4a" -> "audio/m4a"
+                "aac" -> "audio/aac"
+                "mp4" -> "video/mp4"
+                "mov" -> "video/quicktime"
+                "avi" -> "video/x-msvideo"
+                else  -> null
+            }
+        }
 
         fun enqueue(context: Context, sosId: String, userId: String) {
             val data = workDataOf(KEY_SOS_ID to sosId, KEY_USER_ID to userId)

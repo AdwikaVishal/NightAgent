@@ -84,20 +84,24 @@ class VoiceMessageRepository(private val context: Context) {
         durationMs: Long,
         senderId: String,
         receiverId: String,
+        chatId: String,
+        participants: List<String>,
         onProgress: (Int) -> Unit = {}
     ): Result<VoiceMessage> {
         val messageId = UUID.randomUUID().toString()
         val cid = VoiceMessageFirebase.chatId(senderId, receiverId)
 
-        Log.d(TAG_UPLOAD, "sendVoiceMessage: chatId=$cid senderId=$senderId receiverId=$receiverId")
+        Log.d(TAG_UPLOAD, "sendVoiceMessage: chatId=$cid senderId=$senderId receiverId=$receiverId participants=$participants")
 
         // Step 1 — Ensure chat room document exists
         VoiceMessageFirebase.ensureChatRoom(senderId, receiverId)
 
-        // Step 2 — Upload audio to Storage
+        // Step 2 — Upload audio to Storage using canonical chat-scoped path + metadata
         val uploadResult = VoiceMessageFirebase.uploadAudio(
             file       = file,
+            chatId     = cid,
             senderId   = senderId,
+            participants = participants,
             messageId  = messageId,
             onProgress = onProgress
         )
