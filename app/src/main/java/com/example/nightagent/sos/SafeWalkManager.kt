@@ -13,6 +13,9 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 /**
  * Legacy compatibility facade. New implementation lives in com.example.nightagent.journey.
  * Kept to avoid breaking existing callers while Person 3 migration is completed.
+ * Safe Journey lifecycle (tracking, check-ins, deviation detection, SOS escalation) is owned by
+ * JourneyEngine; this facade delegates start/stop to it so there is a single location tracker
+ * and a single background service.
  */
 object SafeWalkManager {
     private const val TAG = "SafeWalkManager"

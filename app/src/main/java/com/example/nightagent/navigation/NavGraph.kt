@@ -1,5 +1,9 @@
 package com.example.nightagent.navigation
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -13,12 +17,13 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.compose.*
 import com.example.nightagent.evidence.EvidenceCaptureService
 import com.example.nightagent.evidence.EvidenceScreen
-import com.example.nightagent.ui.screens.GuardianScreen
-import com.example.nightagent.sos.SOSManager
+import com.example.nightagent.model.TriggerType
+import com.example.nightagent.sos.TriggerManager
 import com.example.nightagent.streaming.GuardianListenScreen
 import com.example.nightagent.streaming.VictimStreamScreen
 import com.example.nightagent.ui.activities.FakeCallActivity
 import com.example.nightagent.ui.components.BottomNavBar
+import com.example.nightagent.ui.screens.GuardianScreen
 import com.example.nightagent.ui.screens.*
 import com.example.nightagent.ui.stealth.StealthSettingsScreen
 import com.example.nightagent.voicemessage.ui.UserRegistrationScreen
@@ -93,15 +98,46 @@ fun NavGraph(
                 HomeScreen(
                     onSOSClick = {
                         val sosId = System.currentTimeMillis().toString()
-                        // Start mic+location foreground service first (allowed from foreground Activity)
-                        EvidenceCaptureService.start(context, sosId)
-                        // Trigger SOS (SMS, alarm, Firestore session)
-                        SOSManager.triggerSOS(context) {
-                            EvidenceCaptureService.stop(context)
+                        // 1. Resilient Evidence Capture: check permissions and protect with try/catch
+                        try {
+                            val hasAudio = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+                            val hasLocation = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.ACCESS_FINE_LOCATION
+                            ) == PackageManager.PERMISSION_GRANTED ||
+                                    ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.ACCESS_COARSE_LOCATION
+                                    ) == PackageManager.PERMISSION_GRANTED
+
+                            if (hasAudio || hasLocation) {
+                                EvidenceCaptureService.start(context, sosId)
+                            } else {
+                                Log.w("NavGraph", "Evidence capture skipped: permissions not granted")
+                            }
+                        } catch (e: Exception) {
+                            Log.w("NavGraph", "Evidence capture start failed: ${e.message}")
                         }
-                        // Navigate to Evidence screen — CameraX starts there in the UI layer
-                        navController.navigate("evidence") {
-                            launchSingleTop = true
+
+                        // 2. Trigger SOS (alarm, SMS, Firestore session, live location loop continue uninterrupted)
+                        TriggerManager.onTrigger(context, TriggerType.MANUAL) {
+                            try {
+                                EvidenceCaptureService.stop(context)
+                            } catch (e: Exception) {
+                                Log.w("NavGraph", "Evidence capture stop failed: ${e.message}")
+                            }
+                        }
+
+                        // 3. Navigate to Evidence screen
+                        try {
+                            navController.navigate("evidence") {
+                                launchSingleTop = true
+                            }
+                        } catch (e: Exception) {
+                            Log.w("NavGraph", "Navigation to evidence screen failed: ${e.message}")
                         }
                     },
 
@@ -162,9 +198,7 @@ fun NavGraph(
 
             composable("stealth") { StealthSettingsScreen() }
 
-            // ── Frontend deliverables: guardian mgmt, journey check-in,
-            //    evidence vault, permissions (demo-data driven) ──────────
-            composable("guardians") { GuardianScreen() }
+            // ── Frontend deliverables: journey check-in, evidence vault, permissions ──────────
             composable("journey") {
                 JourneyScreen(onOpenSafeWalk = { navController.navigate("safewalk") })
             }

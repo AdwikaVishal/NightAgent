@@ -13,8 +13,12 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.nightagent.R
+import com.example.nightagent.model.TriggerType
 import com.example.nightagent.sos.LocationProvider
 import com.example.nightagent.sos.SOSManager
+import com.example.nightagent.sos.SafetySettings
+import com.example.nightagent.sos.ShakeDetector
+import com.example.nightagent.sos.TriggerManager
 
 /**
  * Foreground service that runs silently in the background when Stealth Mode is active.
@@ -30,37 +34,92 @@ class StealthDetectionService : Service() {
     private var pressCount = 0
     private var lastPressTime = 0L
     private var screenReceiver: ScreenToggleReceiver? = null
+    private var backgroundShakeDetector: ShakeDetector? = null
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
     override fun onCreate() {
         super.onCreate()
+        SafetySettings.init(this)
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
-        registerScreenReceiver()
+        syncReceiversAndDetectors()
         Log.d(TAG, "StealthDetectionService started")
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
-        START_STICKY   // restart automatically if killed
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        SafetySettings.init(this)
+        syncReceiversAndDetectors()
+        return START_STICKY   // restart automatically if killed
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
         super.onDestroy()
-        screenReceiver?.let { unregisterReceiver(it) }
+        unregisterScreenReceiver()
+        backgroundShakeDetector?.stop()
+        backgroundShakeDetector = null
         Log.d(TAG, "StealthDetectionService stopped")
+    }
+
+    private fun syncReceiversAndDetectors() {
+        val isStealthOn = StealthRepository(this).isStealthModeEnabled.value
+        val isShakeOn = SafetySettings.shakeDetection.value
+
+        // If neither is enabled, stop the service
+        if (!isStealthOn && !isShakeOn) {
+            Log.d(TAG, "Both stealth and shake detection disabled -> stopping service")
+            stopSelf()
+            return
+        }
+
+        // 1. Screen toggle receiver: only when Stealth Mode is enabled
+        if (isStealthOn) {
+            if (screenReceiver == null) {
+                registerScreenReceiver()
+            }
+        } else {
+            unregisterScreenReceiver()
+        }
+
+        // 2. Background shake detector: only when Shake Detection is enabled
+        if (isShakeOn) {
+            if (backgroundShakeDetector == null) {
+                backgroundShakeDetector = ShakeDetector(this) {
+                    TriggerManager.onTrigger(applicationContext, TriggerType.SHAKE)
+                }
+                backgroundShakeDetector?.start()
+            }
+        } else {
+            backgroundShakeDetector?.stop()
+            backgroundShakeDetector = null
+        }
     }
 
     // ── Screen receiver ──────────────────────────────────────────────────────
 
     private fun registerScreenReceiver() {
+        if (screenReceiver != null) return
         screenReceiver = ScreenToggleReceiver()
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
         }
         registerReceiver(screenReceiver, filter)
+        Log.d(TAG, "ScreenToggleReceiver registered")
+    }
+
+    private fun unregisterScreenReceiver() {
+        screenReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to unregister ScreenToggleReceiver: ${e.message}")
+            }
+        }
+        screenReceiver = null
+        pressCount = 0
     }
 
     inner class ScreenToggleReceiver : BroadcastReceiver() {
@@ -88,17 +147,20 @@ class StealthDetectionService : Service() {
 
     private fun triggerStealthSOS() {
         Log.d(TAG, "Stealth SOS triggered via power button")
-        // Reuse the existing SOSManager — handles SMS, Firestore, live tracking, alarm
-        SOSManager.triggerSOS(applicationContext)
+        // Reuse the existing SOSManager via TriggerManager — handles SMS, Firestore, live tracking, alarm
+        TriggerManager.onTrigger(applicationContext, TriggerType.STEALTH)
 
-        // Also start audio recording if the setting is enabled
-        val recordingIntent = Intent(this, AudioRecordingService::class.java).apply {
-            action = AudioRecordingService.ACTION_START_RECORDING
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(recordingIntent)
-        } else {
-            startService(recordingIntent)
+        // Also start audio recording only if stealth mode is enabled and setting allows
+        val isStealthOn = StealthRepository(this).isStealthModeEnabled.value
+        if (isStealthOn) {
+            val recordingIntent = Intent(this, AudioRecordingService::class.java).apply {
+                action = AudioRecordingService.ACTION_START_RECORDING
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(recordingIntent)
+            } else {
+                startService(recordingIntent)
+            }
         }
     }
 
