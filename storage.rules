@@ -12,34 +12,61 @@ service firebase.storage {
       return isAuthenticated() && request.auth.uid == uid;
     }
 
-    const MAX_VOICE_MESSAGE_BYTES = 25 * 1024 * 1024; // 25 MB
-    const MAX_EVIDENCE_BYTES = 50 * 1024 * 1024;       // 50 MB
+    // Storage rules do not support top-level const declarations; use functions.
+    function maxVoiceMessageBytes() { return 25 * 1024 * 1024; } // 25 MB
+    function maxEvidenceBytes() { return 50 * 1024 * 1024; }       // 50 MB
 
-    const VOICE_MESSAGE_CONTENT_TYPES = [
-      "audio/m4a",
-      "audio/aac",
-      "audio/mp4",
-      "audio/x-m4a"
-    ];
+    function voiceMessageContentTypes() {
+      return ["audio/m4a", "audio/aac", "audio/mp4", "audio/x-m4a"];
+    }
 
-    const EVIDENCE_CONTENT_TYPES = [
-      "audio/m4a",
-      "audio/aac",
-      "audio/mp4",
-      "audio/x-m4a",
-      "video/mp4",
-      "video/quicktime",
-      "video/x-msvideo"
-    ];
+    function evidenceContentTypes() {
+      return [
+        "audio/m4a",
+        "audio/aac",
+        "audio/mp4",
+        "audio/x-m4a",
+        "video/mp4",
+        "video/quicktime",
+        "video/x-msvideo",
+        "image/jpeg",
+        "image/png"
+      ];
+    }
+
+    // Storage custom metadata values are strings. The canonical Android client
+    // writes participant1/participant2; emulator tests may supply a two-element
+    // list. Support both, but validate every slot explicitly (no list.all).
+    function validListParticipants(metadata) {
+      return metadata.participants is list &&
+             metadata.participants.size() == 2 &&
+             metadata.participants[0] is string &&
+             metadata.participants[0].size() > 0 &&
+             metadata.participants[1] is string &&
+             metadata.participants[1].size() > 0 &&
+             metadata.participants[0] != metadata.participants[1];
+    }
+
+    function validStringParticipants(metadata) {
+      return metadata.participant1 is string &&
+             metadata.participant1.size() > 0 &&
+             metadata.participant2 is string &&
+             metadata.participant2.size() > 0 &&
+             metadata.participant1 != metadata.participant2;
+    }
 
     function validVoiceMetadata(metadata) {
       return metadata.chatId is string &&
              metadata.chatId.size() > 0 &&
              metadata.senderId is string &&
              metadata.senderId.size() > 0 &&
-             metadata.participants is list &&
-             metadata.participants.size() == 2 &&
-             metadata.participants.all(p, p is string && p.size() > 0);
+             (validListParticipants(metadata) || validStringParticipants(metadata));
+    }
+
+    function isVoiceParticipant(uid, metadata) {
+      return (validListParticipants(metadata) && uid in metadata.participants) ||
+             (validStringParticipants(metadata) &&
+              (uid == metadata.participant1 || uid == metadata.participant2));
     }
 
     // ── voice_messages/{chatId}/{senderId}/{messageId}.m4a ───────────────────
@@ -59,15 +86,15 @@ service firebase.storage {
                      validVoiceMetadata(request.resource.metadata) &&
                      request.resource.metadata.chatId == chatId &&
                      request.resource.metadata.senderId == senderId &&
-                     request.auth.uid in request.resource.metadata.participants &&
-                     request.resource.size <= MAX_VOICE_MESSAGE_BYTES &&
-                     request.resource.contentType in VOICE_MESSAGE_CONTENT_TYPES;
+                     isVoiceParticipant(request.auth.uid, request.resource.metadata) &&
+                     request.resource.size <= maxVoiceMessageBytes() &&
+                     request.resource.contentType in voiceMessageContentTypes();
 
       // Read: only chat participants can download the voice message.
       allow read: if isAuthenticated() &&
                      resource.metadata != null &&
                      validVoiceMetadata(resource.metadata) &&
-                     request.auth.uid in resource.metadata.participants;
+                     isVoiceParticipant(request.auth.uid, resource.metadata);
 
       // Delete: only the sender can delete their own upload.
       allow delete: if isAuthenticated() &&
@@ -102,8 +129,8 @@ service firebase.storage {
     // Guardian access is a future controlled mechanism (not implemented here).
     match /evidence/{userId}/{allPaths=**} {
       allow create: if isOwner(userId) &&
-                     request.resource.size <= MAX_EVIDENCE_BYTES &&
-                     request.resource.contentType in EVIDENCE_CONTENT_TYPES;
+                     request.resource.size <= maxEvidenceBytes() &&
+                     request.resource.contentType in evidenceContentTypes();
 
       allow read: if isOwner(userId);
 

@@ -3,6 +3,8 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Permissions -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="android.permission.SEND_SMS" />
@@ -158,6 +160,17 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Guardian SOS alert notification actions (acknowledge / escalate) -->
+        <receiver
+            android:name=".firebase.SosAlertActionReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.example.nightagent.SOS_ACKNOWLEDGE" />
+                <action android:name="com.example.nightagent.SOS_ESCALATE" />
             </intent-filter>
         </receiver>
 

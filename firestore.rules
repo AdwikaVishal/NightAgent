@@ -16,20 +16,50 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/journeys/$(journeyId)).data.userId == request.auth.uid;
     }
 
+    // A guardian is an authenticated account explicitly linked on the owner's
+    // user document. Rules never grant write access to guardians and never
+    // expose location data to anonymous or unrelated signed-in users.
+    function isLinkedGuardian(ownerUid) {
+      return signedIn()
+        && ownerUid is string
+        && exists(/databases/$(database)/documents/users/$(ownerUid))
+        && request.auth.uid in get(/databases/$(database)/documents/users/$(ownerUid)).data.get('guardianUids', []);
+    }
+
+    function canReadOwnerData(ownerUid) {
+      return isOwner(ownerUid) || isLinkedGuardian(ownerUid);
+    }
+
+    function canReadJourney(journeyId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/journeys/$(journeyId)).data != null
+        && canReadOwnerData(get(/databases/$(database)/documents/journeys/$(journeyId)).data.userId);
+    }
+
     function isValidTimeMs(t) {
       return t is number && t > 0;
     }
 
     function isValidLatLng(lat, lng) {
-      return lat is double && lat >= -90.0 && lat <= 90.0
-          && lng is double && lng >= -180.0 && lng <= 180.0;
+      return lat is number && lat >= -90.0 && lat <= 90.0
+          && lng is number && lng >= -180.0 && lng <= 180.0;
     }
 
     function isValidLocationUpdate(newDoc) {
-      return newDoc.lat is double && newDoc.lat >= -90.0 && newDoc.lat <= 90.0
-          && newDoc.lng is double && newDoc.lng >= -180.0 && newDoc.lng <= 180.0
+      return newDoc.lat is number && newDoc.lat >= -90.0 && newDoc.lat <= 90.0
+          && newDoc.lng is number && newDoc.lng >= -180.0 && newDoc.lng <= 180.0
           && newDoc.time is number && newDoc.time > 0
           && newDoc.keys() == ["lat", "lng", "time"];
+    }
+
+    // Person 3 writes the legacy live-tracker mirror with descriptive field
+    // names. Accept both documented shapes, but never an unbounded document.
+    function isValidJourneyLocationUpdate(newDoc) {
+      return isValidLocationUpdate(newDoc)
+          || (newDoc.latitude is number && newDoc.latitude >= -90.0 && newDoc.latitude <= 90.0
+              && newDoc.longitude is number && newDoc.longitude >= -180.0 && newDoc.longitude <= 180.0
+              && newDoc.timestamp is number && newDoc.timestamp > 0
+              && newDoc.keys().hasOnly(["latitude", "longitude", "timestamp", "accuracy", "journeyId"]));
     }
 
     function isValidFcmRequest(newDoc) {
@@ -38,7 +68,7 @@ service cloud.firestore {
           && newDoc.senderId is string && newDoc.senderId.size() > 0
           && newDoc.senderName is string && newDoc.senderName.size() > 0 && newDoc.senderName.size() <= 100
           && newDoc.timestamp is number && newDoc.timestamp > 0
-          && newDoc.keys() == ["token", "chatId", "senderId", "senderName", "timestamp"];
+          && hasExactKeys(newDoc, ["token", "chatId", "senderId", "senderName", "timestamp"]);
     }
 
     function senderIsChatParticipant(chatId) {
@@ -47,17 +77,48 @@ service cloud.firestore {
           && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
     }
 
+    // Rules language has no list.all(variable, predicate); check both slots
+    // explicitly so authorization cannot be bypassed by a malformed list.
     function validParticipants(participants) {
       return participants is list && participants.size() == 2
-          && participants.all(p, p is string && p.size() > 0);
+          && participants[0] is string && participants[0].size() > 0
+          && participants[1] is string && participants[1].size() > 0
+          && participants[0] != participants[1];
+    }
+
+    function hasExactKeys(data, keys) {
+      return data.keys().hasOnly(keys) && data.keys().size() == keys.size();
     }
 
     // ── users/{uid} (user profile — Person 6 voice registration + Person 2 guardian contacts) ──
+    // Guardian links are server-owned. A client may manage only its profile and
+    // FCM token; it cannot grant itself or anybody else guardian access.
+    function clientProfileFields(data) {
+      return data.keys().hasOnly([
+        "uid", "displayName", "phoneNumber", "email", "fcmToken",
+        "createdAt", "updatedAt", "profileCompleted"
+      ]);
+    }
+
     match /users/{uid} {
       allow read: if isOwner(uid);
-      allow create: if isOwner(uid);
-      allow update: if isOwner(uid);
+      allow create: if isOwner(uid) && clientProfileFields(request.resource.data);
+      allow update: if isOwner(uid)
+          && clientProfileFields(request.resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "uid", "displayName", "phoneNumber", "email", "fcmToken",
+            "createdAt", "updatedAt", "profileCompleted"
+          ]);
       allow delete: if false;
+    }
+
+    // ── Guardian invitations and notification idempotency (server-only) ──
+    match /guardianInvites/{inviteId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /emergency_notification_requests/{sessionId} {
+      allow read, create, update, delete: if false;
     }
 
     // ── chats/{chatId} (guardian/voice chat membership — Person 2 + Person 6) ──
@@ -72,7 +133,7 @@ service cloud.firestore {
           && validParticipants(request.resource.data.participants)
           && request.auth.uid in request.resource.data.participants
           // Only allowed fields (matches VoiceMessageFirebase.ensureChatRoom).
-          && request.resource.data.keys() == ["chatId", "participants", "createdAt"];
+          && hasExactKeys(request.resource.data, ["chatId", "participants", "createdAt"]);
 
       allow update: if signedIn()
           && validParticipants(resource.data.participants)
@@ -109,11 +170,11 @@ service cloud.firestore {
           && request.resource.data.timestamp is number && request.resource.data.timestamp > 0
           && request.resource.data.uploadStatus in ["PENDING", "UPLOADING", "DONE", "FAILED"]
           && request.resource.data.messageStatus in ["SENT", "DELIVERED", "SEEN"]
-          && request.resource.data.keys() == [
+          && hasExactKeys(request.resource.data, [
             "messageId", "chatId", "senderId", "receiverId",
             "audioUrl", "localPath", "durationMs", "fileSize",
             "timestamp", "uploadStatus", "messageStatus"
-          ];
+          ]);
 
       allow update: if signedIn()
           && chatDoc().data.participants != null
@@ -122,23 +183,19 @@ service cloud.firestore {
           // Only the receiver can mark a message as seen.
           && request.auth.uid == resource.data.receiverId
           // Only messageStatus may change; all other fields immutable.
-          && request.resource.data.keys() == resource.data.keys().union(["messageStatus"])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["messageStatus"])
           && request.resource.data.messageStatus == "SEEN"
           && resource.data.messageStatus != "SEEN";
 
       allow delete: if false;
     }
 
-    // ── fcm_requests/{requestId} (push notifications — Person 6) ──
+    // ── fcm_requests/{requestId} (retired legacy queue) ──
+    // Push delivery now goes exclusively through the v2 callable
+    // `sendVoiceNotification`, which reads FCM tokens server-side. The old
+    // client-writable queue is denied to prevent stale or spoofed requests.
     match /fcm_requests/{requestId} {
-      allow create: if signedIn()
-          && isValidFcmRequest(request.resource.data)
-          && request.resource.data.senderId == request.auth.uid
-          && senderIsChatParticipant(request.resource.data.chatId);
-
-      allow read: if false;
-      allow delete: if false;
-      allow update: if false;
+      allow read, create, update, delete: if false;
     }
 
     // ── sos_alerts/{uid}/sessions/{sessionId} (SOS session — Person 1 + Person 6) ──
@@ -146,7 +203,9 @@ service cloud.firestore {
     // with fields: id, sessionId, userId, state, triggerType, startLat, startLng,
     // startTime, createdAt, updatedAt, resolvedAt, idempotencyKey, failureReason, message.
     match /sos_alerts/{uid}/sessions/{sessionId} {
-      allow read: if isOwner(uid);
+      // Linked guardians need to see the session they were invited to act on;
+      // writes remain owner-only (all guardian actions go through callables).
+      allow read: if canReadOwnerData(uid);
 
       allow create: if isOwner(uid)
           && request.resource.data.userId == uid
@@ -160,6 +219,13 @@ service cloud.firestore {
           && request.resource.data.userId == uid
           && request.resource.data.message is string
           && request.resource.data.message.size() > 0
+          // Clients may not forge backend-owned acknowledgement/escalation state.
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "id", "sessionId", "userId", "state", "triggerType", "startLat",
+            "startLng", "startTime", "createdAt", "updatedAt", "resolvedAt",
+            "idempotencyKey", "failureReason", "message"
+          ])
+          && request.resource.data.state in ["INITIATED", "ACTIVE", "CANCELLED", "RESOLVED"]
           // startTime and startLat/startLng are immutable once set.
           && request.resource.data.startTime == resource.data.startTime
           && request.resource.data.startLat == resource.data.startLat
@@ -184,26 +250,27 @@ service cloud.firestore {
           && request.resource.data.userId == request.auth.uid
           && request.resource.data.journeyId == journeyId;
 
-      allow read: if signedIn() && journeyOwner(journeyId);
+      allow read: if canReadJourney(journeyId);
 
       allow update: if signedIn() && journeyOwner(journeyId);
 
       allow delete: if signedIn() && journeyOwner(journeyId);
 
       match /locations/{locationId} {
-        allow read, create, update, delete: if journeyOwner(journeyId);
+        allow read: if canReadJourney(journeyId);
+        allow create, update, delete: if signedIn() && journeyOwner(journeyId);
       }
 
       match /checkins/{checkInId} {
-        allow read, create, update, delete: if journeyOwner(journeyId);
+        allow read, create, update, delete: if signedIn() && journeyOwner(journeyId);
       }
 
       match /deviations/{eventId} {
-        allow read, create, update, delete: if journeyOwner(journeyId);
+        allow read, create, update, delete: if signedIn() && journeyOwner(journeyId);
       }
 
       match /{subcollection}/{docId} {
-        allow read, write: if journeyOwner(journeyId);
+        allow read, write: if signedIn() && journeyOwner(journeyId);
       }
     }
 
@@ -220,14 +287,14 @@ service cloud.firestore {
     // JourneyEngine also maintains safe_walks/{userId} with legacy fields
     // (userId, startTime, isActive, journeyId, destinationName, expectedArrivalTime).
     match /safe_walks/{userId} {
-      allow read: if isOwner(userId);
+      allow read: if canReadOwnerData(userId);
       allow create: if isOwner(userId);
       allow update: if isOwner(userId);
       allow delete: if false;
 
       match /locations/{locationId} {
-        allow read: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidLocationUpdate(request.resource.data);
+        allow read: if canReadOwnerData(userId);
+        allow create: if isOwner(userId) && isValidJourneyLocationUpdate(request.resource.data);
         allow update: if false;
         allow delete: if false;
       }
@@ -241,35 +308,35 @@ service cloud.firestore {
           && request.resource.data.userId == request.auth.uid
           && isValidLatLng(request.resource.data.latitude, request.resource.data.longitude)
           && isValidTimeMs(request.resource.data.timestamp)
-          && request.resource.data.keys() == ["userId", "latitude", "longitude", "timestamp"];
+          && hasExactKeys(request.resource.data, ["userId", "latitude", "longitude", "timestamp"]);
 
       allow update: if signedIn()
           && resource.data.userId == request.auth.uid
-          && request.resource.data.keys() == resource.data.keys().union(["evidenceUrl"])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["evidenceUrl"])
           && request.resource.data.evidenceUrl is string;
 
       allow delete: if false;
     }
 
-    // ── Top-level collections retained from main (baseline, signed-in access) ──
+    // ── Legacy top-level collections (no shipping caller; retained but denied) ──
     match /sessions/{sessionId} {
-      allow read, write: if signedIn();
+      allow read, create, update, delete: if false;
       match /{subcollection}/{docId} {
-        allow read, write: if signedIn();
+        allow read, create, update, delete: if false;
       }
     }
 
     match /locations/{locationId} {
-      allow read, write: if signedIn();
+      allow read, create, update, delete: if false;
       match /{subcollection}/{docId} {
-        allow read, write: if signedIn();
+        allow read, create, update, delete: if false;
       }
     }
 
     match /location_updates/{updateId} {
-      allow read, write: if signedIn();
+      allow read, create, update, delete: if false;
       match /{subcollection}/{docId} {
-        allow read, write: if signedIn();
+        allow read, create, update, delete: if false;
       }
     }
 

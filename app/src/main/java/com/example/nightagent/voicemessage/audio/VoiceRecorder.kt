@@ -54,10 +54,15 @@ class VoiceRecorder(private val context: Context) {
             val file = createOutputFile()
             currentFile = file
 
-            // FIX 1: Use MediaRecorder(context) constructor on all API levels.
-            // The no-arg MediaRecorder() constructor is deprecated from API 31.
-            // On some OEMs it silently misconfigures audio routing.
-            val recorder = MediaRecorder(context)
+            // MediaRecorder(Context) was added in API 31; minSdk is 24.
+            // Use the context-aware constructor where available and the
+            // supported no-arg constructor on older devices.
+            val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                MediaRecorder(context)
+            } else {
+                @Suppress("DEPRECATION")
+                MediaRecorder()
+            }
 
             try {
                 recorder.apply {

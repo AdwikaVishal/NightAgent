@@ -3,6 +3,7 @@ package com.example.nightagent.ui.screens
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Bundle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -13,6 +14,8 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -28,23 +31,61 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.nightagent.journey.JourneyViewModel
 import com.example.nightagent.journey.model.JourneyStatus
-import org.osmdroid.config.Configuration
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import com.example.nightagent.map.MapTileSources
+import kotlinx.coroutines.launch
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 
+private val geoPointSaver = Saver<GeoPoint?, Bundle>(
+    save = { point ->
+        Bundle().apply {
+            putBoolean("hasLocation", point != null)
+            if (point != null) {
+                putDouble("latitude", point.latitude)
+                putDouble("longitude", point.longitude)
+            }
+        }
+    },
+    restore = { bundle ->
+        if (bundle.getBoolean("hasLocation")) {
+            GeoPoint(bundle.getDouble("latitude"), bundle.getDouble("longitude"))
+        } else {
+            null
+        }
+    }
+)
+
+private val pathSaver = Saver<MutableList<GeoPoint>, ArrayList<Bundle>>(
+    save = { points ->
+        ArrayList(points.map { point ->
+            Bundle().apply {
+                putDouble("latitude", point.latitude)
+                putDouble("longitude", point.longitude)
+            }
+        })
+    },
+    restore = { saved ->
+        saved.mapTo(mutableStateListOf()) { bundle ->
+            GeoPoint(bundle.getDouble("latitude"), bundle.getDouble("longitude"))
+        }
+    }
+)
+
 @Composable
 fun SafeWalkScreen(vm: JourneyViewModel = viewModel()) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
     val state by vm.uiState.collectAsState()
     val journey = state.journey
     val active = journey?.statusEnum() == JourneyStatus.ACTIVE
 
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
-    val actualPath = remember { mutableStateListOf<GeoPoint>() }
+    val actualPath = rememberSaveable(saver = pathSaver) { mutableStateListOf<GeoPoint>() }
+    var savedZoom by rememberSaveable { mutableStateOf(17.0) }
+    var savedCenter by rememberSaveable(stateSaver = geoPointSaver) { mutableStateOf<GeoPoint?>(null) }
 
     val neededPerms = remember {
         buildList {
@@ -60,6 +101,10 @@ fun SafeWalkScreen(vm: JourneyViewModel = viewModel()) {
         if (missing) permLauncher.launch(neededPerms)
     }
 
+    LaunchedEffect(mapViewRef) {
+        mapViewRef?.let { MapTileSources.refreshTileSource(it, context, force = true) }
+    }
+
     LaunchedEffect(state.lastLocation?.timestamp) {
         state.lastLocation?.let { actualPath.add(GeoPoint(it.latitude, it.longitude)) }
     }
@@ -68,13 +113,23 @@ fun SafeWalkScreen(vm: JourneyViewModel = viewModel()) {
     DisposableEffect(lifecycleOwner) {
         val obs = LifecycleEventObserver { _, e ->
             when (e) {
-                Lifecycle.Event.ON_RESUME -> mapViewRef?.onResume()
+                Lifecycle.Event.ON_RESUME -> mapViewRef?.let { map ->
+                    map.onResume()
+                    scope.launch { MapTileSources.refreshTileSource(map, context) }
+                }
                 Lifecycle.Event.ON_PAUSE -> mapViewRef?.onPause()
                 else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(obs)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(obs); mapViewRef?.onDetach() }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(obs)
+            mapViewRef?.let { map ->
+                savedZoom = map.zoomLevelDouble
+                savedCenter = map.mapCenter as? GeoPoint
+                map.onDetach()
+            }
+        }
     }
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -90,18 +145,18 @@ fun SafeWalkScreen(vm: JourneyViewModel = viewModel()) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
-                    Configuration.getInstance().load(ctx, ctx.getSharedPreferences("osmdroid", android.content.Context.MODE_PRIVATE))
-                    Configuration.getInstance().userAgentValue = ctx.packageName
                     MapView(ctx).apply {
-                        setTileSource(TileSourceFactory.MAPNIK)
+                        MapTileSources.configureMapView(this, ctx)
                         setMultiTouchControls(true)
-                        controller.setZoom(17.0)
+                        controller.setZoom(savedZoom)
+                        savedCenter?.let { controller.setCenter(it) }
                         onResume()
                         mapViewRef = this
                     }
                 },
                 update = { map ->
-                    map.overlays.clear()
+                    // Keep the attribution overlay while rebuilding route overlays.
+                    map.overlays.removeAll { it is Polyline || it is Marker }
                     val routePts = journey.routePoints.map { GeoPoint(it.latitude, it.longitude) }
                     if (routePts.size >= 2) {
                         val planned = Polyline().apply {

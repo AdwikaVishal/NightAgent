@@ -1,47 +1,42 @@
-const {
-  assertFails,
-  assertSucceeds,
-  initializeTestApp,
-  initializeAdminApp,
-  clearFirestoreData,
-} = require("@firebase/rules-unit-testing");
+const { assertFails, assertSucceeds } = require("@firebase/rules-unit-testing");
+const harness = require("./test-env");
 
-const PROJECT_ID = "nightagent-35d38";
-const RULES_FILE = "storage.rules";
-
+const PROJECT_ID = harness.PROJECT_ID;
 const aliceUid = "alice_uid";
 const bobUid = "bob_uid";
 const carolUid = "carol_uid";
 const chatId = "alice_uid_bob_uid";
 
+// Storage custom metadata values are strings, matching the Android client.
 const voiceMetadata = {
   chatId,
   senderId: aliceUid,
-  participants: [aliceUid, bobUid],
+  participant1: aliceUid,
+  participant2: bobUid,
 };
 
 beforeAll(async () => {
-  // Storage rules are loaded via firebase emulators:exec or the rules unit
-  // testing harness. The @firebase/rules-unit-testing storage helper is used
-  // through the Firebase Emulator Suite integration.
+  await harness.init({
+    firestoreRules: "firestore.rules",
+    storageRules: "storage.rules",
+  });
 });
 
 beforeEach(async () => {
-  await clearFirestoreData({ projectId: PROJECT_ID });
+  await harness.clearStorage();
+  await harness.clearFirestore();
 });
 
 afterAll(async () => {
-  // Cleanup handled by test harness.
+  await harness.cleanup();
 });
 
-// ── Helper: create an authenticated app for a given UID ──────────────────────
-
 function authedApp(uid) {
-  return initializeTestApp({ projectId: PROJECT_ID, auth: { uid } });
+  return harness.authedApp(uid);
 }
 
 function unauthedApp() {
-  return initializeTestApp({ projectId: PROJECT_ID, auth: null });
+  return harness.unauthedApp();
 }
 
 // ── voice_messages/{chatId}/{senderId}/{messageId}.m4a ───────────────────────
@@ -55,7 +50,7 @@ describe("voice_messages/{chatId}/{senderId}/{messageId}.m4a", () => {
     await assertSucceeds(
       ref.putString("fake audio data", "raw", {
         contentType: "audio/m4a",
-        metadata: voiceMetadata,
+        customMetadata: voiceMetadata,
       })
     );
   });
@@ -68,7 +63,7 @@ describe("voice_messages/{chatId}/{senderId}/{messageId}.m4a", () => {
     await assertSucceeds(
       ref.putString("fake audio data", "raw", {
         contentType: "audio/aac",
-        metadata: voiceMetadata,
+        customMetadata: voiceMetadata,
       })
     );
   });
@@ -79,7 +74,7 @@ describe("voice_messages/{chatId}/{senderId}/{messageId}.m4a", () => {
     await assertFails(
       ref.putString("fake audio data", "raw", {
         contentType: "audio/m4a",
-        metadata: voiceMetadata,
+        customMetadata: voiceMetadata,
       })
     );
   });
@@ -90,7 +85,7 @@ describe("voice_messages/{chatId}/{senderId}/{messageId}.m4a", () => {
     await assertFails(
       ref.putString("fake audio data", "raw", {
         contentType: "audio/m4a",
-        metadata: voiceMetadata,
+        customMetadata: voiceMetadata,
       })
     );
   });
@@ -104,7 +99,7 @@ describe("voice_messages/{chatId}/{senderId}/{messageId}.m4a", () => {
     await assertFails(
       ref.putString("fake data", "raw", {
         contentType: "image/png",
-        metadata: voiceMetadata,
+        customMetadata: voiceMetadata,
       })
     );
   });
@@ -128,22 +123,23 @@ describe("voice_messages/{chatId}/{senderId}/{messageId}.m4a", () => {
     await assertSucceeds(
       ref.putString("fake audio data", "raw", {
         contentType: "audio/m4a",
-        metadata: voiceMetadata,
+        customMetadata: voiceMetadata,
       })
     );
     await assertSucceeds(ref.getDownloadURL());
   });
 
   test("other chat participant can read voice message", async () => {
-    const storage = authedApp(bobUid).storage();
-    const ref = storage.ref().child(path);
+    // Only the sender may create the object; the receiver then downloads it.
+    const senderStorage = authedApp(aliceUid).storage();
     await assertSucceeds(
-      ref.putString("fake audio data", "raw", {
+      senderStorage.ref().child(path).putString("fake audio data", "raw", {
         contentType: "audio/m4a",
-        metadata: voiceMetadata,
+        customMetadata: voiceMetadata,
       })
     );
-    await assertSucceeds(ref.getDownloadURL());
+    const receiverRef = authedApp(bobUid).storage().ref().child(path);
+    await assertSucceeds(receiverRef.getDownloadURL());
   });
 
   // REGRESSION: non-participant cannot read another user's voice message
@@ -154,7 +150,7 @@ describe("voice_messages/{chatId}/{senderId}/{messageId}.m4a", () => {
     await assertFails(
       ref.putString("fake audio data", "raw", {
         contentType: "audio/m4a",
-        metadata: voiceMetadata,
+        customMetadata: voiceMetadata,
       })
     );
     // But also test read directly - first upload as alice, then read as carol
@@ -163,7 +159,7 @@ describe("voice_messages/{chatId}/{senderId}/{messageId}.m4a", () => {
     await assertSucceeds(
       aliceRef.putString("fake audio data", "raw", {
         contentType: "audio/m4a",
-        metadata: voiceMetadata,
+        customMetadata: voiceMetadata,
       })
     );
     await assertFails(ref.getDownloadURL());
@@ -184,7 +180,7 @@ describe("voice_messages/{chatId}/{senderId}/{messageId}.m4a", () => {
     await assertSucceeds(
       ref.putString("fake audio", "raw", {
         contentType: "audio/m4a",
-        metadata: voiceMetadata,
+        customMetadata: voiceMetadata,
       })
     );
     await assertSucceeds(ref.delete());
@@ -225,6 +221,14 @@ describe("evidence/{userId}/{timestamp}.mp4", () => {
       ref.putString("fake audio evidence", "raw", {
         contentType: "audio/m4a",
       })
+    );
+  });
+
+  test("owner can upload JPEG photo evidence", async () => {
+    const storage = authedApp(aliceUid).storage();
+    const ref = storage.ref().child(`evidence/${aliceUid}/1234567892/photos/photo.jpg`);
+    await assertSucceeds(
+      ref.putString("fake photo evidence", "raw", { contentType: "image/jpeg" })
     );
   });
 

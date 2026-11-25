@@ -2,7 +2,7 @@ package com.example.nightagent.journey
 
 import com.example.nightagent.journey.model.*
 
-class FakeJourneyRepository : JourneyRepository {
+open class FakeJourneyRepository : JourneyRepository {
     val journeys = mutableMapOf<String, Journey>()
     val locations = mutableMapOf<String, MutableList<JourneyPoint>>()
     val checkIns = mutableMapOf<String, MutableList<CheckInRecord>>()

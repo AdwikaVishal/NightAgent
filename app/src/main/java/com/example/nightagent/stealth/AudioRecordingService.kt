@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.IBinder
@@ -98,7 +99,17 @@ class AudioRecordingService : Service() {
             isRecording = true
             recordingStartTime = SystemClock.elapsedRealtime()
 
-            startForeground(NOTIFICATION_ID, buildNotification())
+            // API 29+ requires the declared microphone type; API 34+ also
+            // requires FOREGROUND_SERVICE_MICROPHONE (declared in the manifest).
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, buildNotification())
+            }
             Log.d(TAG, "Recording started → ${currentFile!!.name}")
 
             // Auto-stop after MAX_DURATION_MS to avoid draining battery
@@ -172,6 +183,12 @@ class AudioRecordingService : Service() {
         const val ACTION_STOP_RECORDING  = "com.example.nightagent.STOP_RECORDING"
 
         fun start(context: Context) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.w(TAG, "Skipping stealth recording service: RECORD_AUDIO not granted")
+                return
+            }
             val intent = Intent(context, AudioRecordingService::class.java).apply {
                 action = ACTION_START_RECORDING
             }

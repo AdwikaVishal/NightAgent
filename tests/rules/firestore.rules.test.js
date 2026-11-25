@@ -1,44 +1,34 @@
-const {
-  assertFails,
-  assertSucceeds,
-  initializeTestApp,
-  initializeAdminApp,
-  clearFirestoreData,
-} = require("@firebase/rules-unit-testing");
-const firebase = require("@firebase/rules-unit-testing");
+const { assertFails, assertSucceeds } = require("@firebase/rules-unit-testing");
+const harness = require("./test-env");
 
-const PROJECT_ID = "nightagent-35d38";
-const RULES_FILE = "firestore.rules";
-
+const PROJECT_ID = harness.PROJECT_ID;
+const FieldValue = harness.FieldValue;
 const aliceUid = "alice_uid";
 const bobUid = "bob_uid";
 const carolUid = "carol_uid";
 
 beforeAll(async () => {
-  await firebase.loadFirestoreRules({
-    projectId: PROJECT_ID,
-    rules: RULES_FILE,
-  });
+  await harness.init({ firestoreRules: "firestore.rules" });
 });
 
 beforeEach(async () => {
-  await clearFirestoreData({ projectId: PROJECT_ID });
+  await harness.clearFirestore();
 });
 
 afterAll(async () => {
-  await Promise.all(firebase.apps().map((app) => app.delete()));
+  await harness.cleanup();
 });
 
-// ── Helper: create an authenticated app for a given UID ──────────────────────
-
 function authedApp(uid) {
-  return initializeTestApp({ projectId: PROJECT_ID, auth: { uid } });
+  return harness.authedApp(uid);
 }
 
-// ── Helper: create an unauthenticated app ────────────────────────────────────
-
 function unauthedApp() {
-  return initializeTestApp({ projectId: PROJECT_ID, auth: null });
+  return harness.unauthedApp();
+}
+
+async function withAdmin(work) {
+  return harness.withAdmin(work);
 }
 
 // ── users/{uid} ──────────────────────────────────────────────────────────────
@@ -92,7 +82,7 @@ describe("chats/{chatId}", () => {
   const chatId = "alice_uid_bob_uid";
 
   beforeEach(async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     await admin
       .doc(`chats/${chatId}`)
       .set({
@@ -101,6 +91,7 @@ describe("chats/{chatId}", () => {
         lastMessage: "🎙 Voice message",
         lastTimestamp: Date.now(),
       });
+    });
   });
 
   test("participant can read own chat", async () => {
@@ -126,7 +117,7 @@ describe("chats/{chatId}", () => {
         .set({
           chatId: "alice_uid_carol_uid",
           participants: [aliceUid, carolUid],
-          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          createdAt: FieldValue.serverTimestamp(),
         })
     );
   });
@@ -192,7 +183,7 @@ describe("chats/{chatId}/messages/{msgId}", () => {
   const msgId = "msg_001";
 
   beforeEach(async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     await admin.doc(`chats/${chatId}`).set({
       chatId,
       participants: [aliceUid, bobUid],
@@ -211,6 +202,7 @@ describe("chats/{chatId}/messages/{msgId}", () => {
         uploadStatus: "DONE",
         messageStatus: "SENT",
       });
+    });
   });
 
   test("participant can read message", async () => {
@@ -242,6 +234,7 @@ describe("chats/{chatId}/messages/{msgId}", () => {
           senderId: aliceUid,
           receiverId: bobUid,
           audioUrl: "https://storage.example.com/voice_messages/alice_uid/msg_002.m4a",
+          localPath: "",
           durationMs: 3000,
           fileSize: 8000,
           timestamp: Date.now(),
@@ -345,16 +338,17 @@ describe("fcm_requests/{requestId}", () => {
   const chatId = "alice_uid_bob_uid";
 
   beforeEach(async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     await admin.doc(`chats/${chatId}`).set({
       chatId,
       participants: [aliceUid, bobUid],
     });
+    });
   });
 
-  test("authenticated client can create FCM request for own chat", async () => {
+  test("legacy FCM request writes are denied; sendVoiceNotification is canonical", async () => {
     const db = authedApp(aliceUid).firestore();
-    await assertSucceeds(
+    await assertFails(
       db.collection("fcm_requests").add({
         token: "fcm_token_bob",
         chatId,
@@ -436,7 +430,7 @@ describe("fcm_requests/{requestId}", () => {
   });
 
   test("client cannot delete FCM requests", async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     const doc = await admin.collection("fcm_requests").add({
       token: "fcm_token_bob",
       chatId,
@@ -445,7 +439,8 @@ describe("fcm_requests/{requestId}", () => {
       timestamp: Date.now(),
     });
     const db = authedApp(aliceUid).firestore();
-    await assertFails(db.doc(doc.id).delete());
+    await assertFails(db.doc(`fcm_requests/${doc.id}`).delete());
+    });
   });
 
   test("unauthenticated create is denied", async () => {
@@ -471,6 +466,7 @@ describe("sos_alerts/{uid}/sessions/{sessionId}", () => {
       db
         .doc(`sos_alerts/${aliceUid}/sessions/session_001`)
         .set({
+          userId: aliceUid,
           message: "Emergency! Need help.",
           startLat: 28.6139,
           startLng: 77.2090,
@@ -480,7 +476,7 @@ describe("sos_alerts/{uid}/sessions/{sessionId}", () => {
   });
 
   test("owner can read own SOS session", async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     await admin
       .doc(`sos_alerts/${aliceUid}/sessions/session_002`)
       .set({
@@ -493,10 +489,11 @@ describe("sos_alerts/{uid}/sessions/{sessionId}", () => {
     await assertSucceeds(
       db.doc(`sos_alerts/${aliceUid}/sessions/session_002`).get()
     );
+    });
   });
 
   test("cross-user cannot read SOS session", async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     await admin
       .doc(`sos_alerts/${aliceUid}/sessions/session_003`)
       .set({
@@ -508,6 +505,25 @@ describe("sos_alerts/{uid}/sessions/{sessionId}", () => {
     const db = authedApp(bobUid).firestore();
     await assertFails(
       db.doc(`sos_alerts/${aliceUid}/sessions/session_003`).get()
+    );
+    });
+  });
+
+  test("owner-linked guardian can read SOS session but not write it", async () => {
+    await withAdmin(async (admin) => {
+      await admin.doc(`users/${aliceUid}`).set({ guardianUids: [bobUid] }, { merge: true });
+      await admin.doc(`sos_alerts/${aliceUid}/sessions/session_003b`).set({
+        userId: aliceUid,
+        message: "Test SOS",
+        startLat: 28.6139,
+        startLng: 77.2090,
+        startTime: Date.now(),
+      });
+    });
+    const db = authedApp(bobUid).firestore();
+    await assertSucceeds(db.doc(`sos_alerts/${aliceUid}/sessions/session_003b`).get());
+    await assertFails(
+      db.doc(`sos_alerts/${aliceUid}/sessions/session_003b`).set({ message: "spoofed" }, { merge: true })
     );
   });
 
@@ -547,7 +563,7 @@ describe("sos_alerts/{uid}/sessions/{sessionId}", () => {
 
 describe("sos_alerts/{uid}/sessions/{sessionId}/location_updates/{locationId}", () => {
   beforeEach(async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     await admin
       .doc(`sos_alerts/${aliceUid}/sessions/session_loc`)
       .set({
@@ -556,6 +572,7 @@ describe("sos_alerts/{uid}/sessions/{sessionId}/location_updates/{locationId}", 
         startLng: 77.2090,
         startTime: Date.now(),
       });
+    });
   });
 
   test("owner can write location update", async () => {
@@ -641,7 +658,7 @@ describe("sos_logs/{logId}", () => {
   });
 
   test("cross-user cannot read SOS log", async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     const doc = await admin.collection("sos_logs").add({
       userId: aliceUid,
       latitude: 28.6139,
@@ -649,7 +666,8 @@ describe("sos_logs/{logId}", () => {
       timestamp: Date.now(),
     });
     const db = authedApp(bobUid).firestore();
-    await assertFails(db.doc(doc.id).get());
+    await assertFails(db.doc(`sos_logs/${doc.id}`).get());
+    });
   });
 
   test("user cannot create SOS log with spoofed userId", async () => {
@@ -665,7 +683,7 @@ describe("sos_logs/{logId}", () => {
   });
 
   test("only evidenceUrl can be added on update", async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     const doc = await admin.collection("sos_logs").add({
       userId: aliceUid,
       latitude: 28.6139,
@@ -674,16 +692,17 @@ describe("sos_logs/{logId}", () => {
     });
     const db = authedApp(aliceUid).firestore();
     await assertSucceeds(
-      db.doc(doc.id).update({ evidenceUrl: "https://storage.example.com/evidence/alice_uid/123.mp4" })
+      db.doc(`sos_logs/${doc.id}`).update({ evidenceUrl: "https://storage.example.com/evidence/alice_uid/123.mp4" })
     );
     await assertFails(
-      db.doc(doc.id).update({ userId: bobUid })
+      db.doc(`sos_logs/${doc.id}`).update({ userId: bobUid })
     );
+    });
   });
 
   // REGRESSION: SOS log cannot be deleted
   test("SOS log cannot be deleted", async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     const doc = await admin.collection("sos_logs").add({
       userId: aliceUid,
       latitude: 28.6139,
@@ -691,7 +710,8 @@ describe("sos_logs/{logId}", () => {
       timestamp: Date.now(),
     });
     const db = authedApp(aliceUid).firestore();
-    await assertFails(db.doc(doc.id).delete());
+    await assertFails(db.doc(`sos_logs/${doc.id}`).delete());
+    });
   });
 });
 
@@ -710,7 +730,7 @@ describe("safe_walks/{userId}", () => {
   });
 
   test("cross-user cannot read Safe Walk", async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     await admin.doc(`safe_walks/${aliceUid}`).set({
       userId: aliceUid,
       startTime: Date.now(),
@@ -718,6 +738,7 @@ describe("safe_walks/{userId}", () => {
     });
     const db = authedApp(bobUid).firestore();
     await assertFails(db.doc(`safe_walks/${aliceUid}`).get());
+    });
   });
 
   test("cross-user cannot write Safe Walk", async () => {
@@ -732,7 +753,7 @@ describe("safe_walks/{userId}", () => {
   });
 
   test("owner can end Safe Walk (set isActive=false)", async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     await admin.doc(`safe_walks/${aliceUid}`).set({
       userId: aliceUid,
       startTime: Date.now(),
@@ -742,6 +763,7 @@ describe("safe_walks/{userId}", () => {
     await assertSucceeds(
       db.doc(`safe_walks/${aliceUid}`).update({ isActive: false })
     );
+    });
   });
 
   test("unauthenticated write is denied", async () => {
@@ -760,11 +782,12 @@ describe("safe_walks/{userId}", () => {
 
 describe("safe_walks/{userId}/locations/{locationId}", () => {
   beforeEach(async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     await admin.doc(`safe_walks/${aliceUid}`).set({
       userId: aliceUid,
       startTime: Date.now(),
       isActive: true,
+    });
     });
   });
 
@@ -787,7 +810,7 @@ describe("safe_walks/{userId}/locations/{locationId}", () => {
   });
 
   test("owner can read own locations", async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     await admin
       .doc(`safe_walks/${aliceUid}/locations/loc_sw_003`)
       .set({ latitude: 28.6139, longitude: 77.2090, timestamp: Date.now() });
@@ -795,10 +818,11 @@ describe("safe_walks/{userId}/locations/{locationId}", () => {
     await assertSucceeds(
       db.doc(`safe_walks/${aliceUid}/locations/loc_sw_003`).get()
     );
+    });
   });
 
   test("cross-user cannot read locations", async () => {
-    const admin = initializeAdminApp({ projectId: PROJECT_ID }).firestore();
+    await withAdmin(async (admin) => {
     await admin
       .doc(`safe_walks/${aliceUid}/locations/loc_sw_004`)
       .set({ latitude: 28.6139, longitude: 77.2090, timestamp: Date.now() });
@@ -806,5 +830,6 @@ describe("safe_walks/{userId}/locations/{locationId}", () => {
     await assertFails(
       db.doc(`safe_walks/${aliceUid}/locations/loc_sw_004`).get()
     );
+    });
   });
 });
