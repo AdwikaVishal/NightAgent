@@ -1,5 +1,6 @@
 package com.example.nightagent.stealth
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -8,10 +9,13 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.example.nightagent.R
 import com.example.nightagent.model.TriggerType
 import com.example.nightagent.sos.LocationProvider
@@ -42,7 +46,10 @@ class StealthDetectionService : Service() {
         super.onCreate()
         SafetySettings.init(this)
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        if (!hasLocationPermission() || !startForegroundCompat(buildNotification())) {
+            stopSelf()
+            return
+        }
         syncReceiversAndDetectors()
         Log.d(TAG, "StealthDetectionService started")
     }
@@ -165,6 +172,35 @@ class StealthDetectionService : Service() {
     }
 
     // ── Notification ─────────────────────────────────────────────────────────
+
+    private fun hasLocationPermission(): Boolean {
+        val fine = ContextCompat.checkSelfPermission(
+            applicationContext,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(
+            applicationContext,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        return fine || coarse
+    }
+
+    /** Android 14+ requires the manifest-declared FGS type at startForeground. */
+    private fun startForegroundCompat(notification: Notification): Boolean = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+        true
+    } catch (securityException: SecurityException) {
+        Log.e(TAG, "Cannot start location foreground service", securityException)
+        false
+    }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

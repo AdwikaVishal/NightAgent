@@ -1,15 +1,19 @@
 package com.example.nightagent.streaming
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.example.nightagent.R
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.*
@@ -39,7 +43,16 @@ class AudioStreamingService : Service() {
             ACTION_START -> {
                 val callId = intent.getStringExtra(EXTRA_CALL_ID) ?: return START_NOT_STICKY
                 val calleeUid = intent.getStringExtra(EXTRA_CALLEE_UID) ?: return START_NOT_STICKY
-                startForeground(NOTIFICATION_ID, buildNotification("Connecting…"))
+                if (ContextCompat.checkSelfPermission(
+                        applicationContext,
+                        Manifest.permission.RECORD_AUDIO
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    Log.w(TAG, "Audio streaming requires RECORD_AUDIO; stopping service")
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                if (!startForegroundCompat(buildNotification("Connecting…"))) return START_NOT_STICKY
                 startStreaming(callId, calleeUid)
             }
             ACTION_STOP -> stopStreaming()
@@ -125,6 +138,28 @@ class AudioStreamingService : Service() {
         }
     }
 
+    /**
+     * Android 14+ (targetSdk 35) requires the foreground service type passed to
+     * startForeground to match the manifest declaration. Missing microphone
+     * permission is handled by stopping cleanly instead of crashing the app.
+     */
+    private fun startForegroundCompat(notification: Notification): Boolean = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+        true
+    } catch (securityException: SecurityException) {
+        Log.e(TAG, "Cannot start microphone foreground service", securityException)
+        stopSelf()
+        false
+    }
+
     private fun buildNotification(text: String): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("🔴 Live Audio Streaming")
@@ -141,6 +176,7 @@ class AudioStreamingService : Service() {
     }
 
     companion object {
+        private const val TAG = "AudioStreamingService"
         private const val CHANNEL_ID = "audio_stream_channel"
         private const val NOTIFICATION_ID = 2001
 

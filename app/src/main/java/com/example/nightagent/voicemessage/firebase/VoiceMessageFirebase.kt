@@ -43,11 +43,22 @@ object VoiceMessageFirebase {
      */
     suspend fun registerUser(profile: UserProfile) {
         try {
+            // Never clear a previously registered FCM token when the caller only
+            // has a phone number/display name to save.
+            val effectiveProfile = if (profile.fcmToken.isBlank()) {
+                val existingToken = runCatching {
+                    db.collection("users").document(profile.uid).get().await()
+                        .getString("fcmToken").orEmpty()
+                }.getOrDefault("")
+                if (existingToken.isBlank()) profile else profile.copy(fcmToken = existingToken)
+            } else {
+                profile
+            }
             db.collection("users")
-                .document(profile.uid)
-                .set(profile.toMap(), SetOptions.merge())
+                .document(effectiveProfile.uid)
+                .set(effectiveProfile.toMap(), SetOptions.merge())
                 .await()
-            Log.d(TAG_SYNC, "User registered: uid=${profile.uid} phone=${profile.phoneNumber}")
+            Log.d(TAG_SYNC, "User registered: uid=${effectiveProfile.uid} phone=${effectiveProfile.phoneNumber}")
         } catch (e: Exception) {
             Log.e(TAG_SYNC, "registerUser failed: ${e.message}", e)
         }
@@ -161,12 +172,19 @@ object VoiceMessageFirebase {
 
             Log.d(TAG_UPLOAD, "Starting upload: ${file.name} (${file.length()} bytes)")
 
-            // Set Storage metadata for authorization tracing.
-            // chatId and senderId are also reflected in the object path.
+            // Storage custom metadata values are strings. Storage rules cannot
+            // parse a comma-separated list, so emit two explicit participant
+            // slots that the rules can validate without a Firestore lookup.
+            val participantSlots = participants.distinct().take(2)
+            require(participantSlots.size == 2) {
+                "Voice upload requires exactly two distinct chat participants"
+            }
             val metadata = StorageMetadata.Builder()
                 .setCustomMetadata("chatId", chatId)
                 .setCustomMetadata("senderId", senderId)
                 .setCustomMetadata("participants", participants.joinToString(","))
+                .setCustomMetadata("participant1", participantSlots[0])
+                .setCustomMetadata("participant2", participantSlots[1])
                 .setContentType("audio/m4a")
                 .build()
 
@@ -335,36 +353,13 @@ object VoiceMessageFirebase {
     // ── Queue FCM push notification ───────────────────────────────────────────
 
     /**
-     * Write an FCM request document. A Cloud Function watches this collection
-     * and sends the actual push notification.
+     * Requests push delivery through the canonical v2 callable
+     * `sendVoiceNotification`. The backend reads the receiver's FCM token from
+     * the trusted `users/{uid}` document, verifies both chat participants and
+     * sends the message with the Admin SDK. The client never handles a token.
      *
-     * Deploy this Cloud Function (index.js):
-     *
-     * const functions = require('firebase-functions');
-     * const admin = require('firebase-admin');
-     * admin.initializeApp();
-     *
-     * exports.sendVoiceNotification = functions.firestore
-     *   .document('fcm_requests/{reqId}')
-     *   .onCreate(async (snap) => {
-     *     const data = snap.data();
-     *     if (!data.token) return;
-     *     await admin.messaging().send({
-     *       token: data.token,
-     *       data: {
-     *         type: 'voice_message',
-     *         chatId: data.chatId,
-     *         senderId: data.senderId,
-     *         senderName: data.senderName
-     *       },
-     *       android: { priority: 'high' },
-     *       notification: {
-     *         title: `Voice message from ${data.senderName}`,
-     *         body: '🎙 Tap to listen'
-     *       }
-     *     });
-     *     await snap.ref.delete(); // clean up
-     *   });
+     * Kept as a non-fatal step: the message is already persisted in Firestore,
+     * so the receiver still sees it in-app if FCM delivery fails.
      */
     suspend fun queuePushNotification(
         receiverUid: String,
@@ -373,24 +368,19 @@ object VoiceMessageFirebase {
         chatId: String
     ) {
         try {
-            val receiverDoc = db.collection("users").document(receiverUid).get().await()
-            val token = receiverDoc.getString("fcmToken") ?: run {
-                Log.w(TAG_SYNC, "No FCM token for $receiverUid — skipping push")
-                return
-            }
-            db.collection("fcm_requests").add(
-                mapOf(
-                    "token"      to token,
-                    "chatId"     to chatId,
-                    "senderId"   to senderUid,
-                    "senderName" to senderName,
-                    "timestamp"  to System.currentTimeMillis()
+            val result = FirebaseFunctions.getInstance()
+                .getHttpsCallable("sendVoiceNotification")
+                .call(
+                    mapOf(
+                        "receiverUid" to receiverUid,
+                        "chatId" to chatId,
+                        "senderName" to senderName
+                    )
                 )
-            ).await()
-            Log.d(TAG_SYNC, "FCM request queued for $receiverUid")
+                .await()
+            Log.d(TAG_SYNC, "Voice notification confirmed for $receiverUid: ${result?.data}")
         } catch (e: Exception) {
-            Log.e(TAG_SYNC, "queuePushNotification failed: ${e.message}")
-            // Non-fatal — message is in Firestore, receiver sees it on next open
+            Log.w(TAG_SYNC, "Voice notification not confirmed for $receiverUid: ${e.message}")
         }
     }
 
@@ -422,7 +412,7 @@ object VoiceMessageFirebase {
                     "chatId"    to chatId,
                     "messageId" to messageId,
                 )
-            )
+            ).await()
             val data = result.data as Map<String, *>
             val signedUrl = data["signedUrl"] as String
             Log.d(TAG_UPLOAD, "Signed voice URL obtained for message $messageId in chat $chatId")

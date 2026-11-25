@@ -314,6 +314,46 @@ class JourneyEngineTest {
         assertEquals(1, sosReasons.count { it.contains("ROUTE_DEVIATION") })
     }
 
+    @Test
+    fun pendingSync_isExposedAndClearedAfterSuccessfulReplay() = testEngine {
+        val pendingRepo = PendingSyncFakeRepository().apply { pending = true }
+        repo = pendingRepo
+        val eng = engine()
+        startActiveJourney(eng)
+
+        assertTrue(eng.state.value.pendingSync)
+
+        pendingRepo.pending = false
+        assertTrue(eng.retryPendingSync().isSuccess)
+        assertFalse(eng.state.value.pendingSync)
+    }
+
+    @Test
+    fun clearingCachedJourney_removesLocalStateAndResetsUi() = testEngine {
+        repo = PendingSyncFakeRepository()
+        val eng = engine()
+        startActiveJourney(eng)
+        assertNotNull(eng.state.value.journey)
+        pendingCleared = false
+
+        eng.clearCachedJourney()
+
+        assertNull(eng.state.value.journey)
+        assertFalse(eng.state.value.pendingSync)
+        assertTrue(pendingCleared)
+    }
+
+    private var pendingCleared = false
+
+    private inner class PendingSyncFakeRepository : FakeJourneyRepository() {
+        var pending: Boolean = false
+        override suspend fun hasPendingSync(): Boolean = pending
+        override suspend fun retryPendingSync(userId: String): Result<Unit> = Result.success(Unit)
+        override fun clearLocalState() {
+            pendingCleared = true
+        }
+    }
+
     private fun runtimeStoreActiveId(): String? {
         val slot = slot<String>()
         verify(atLeast = 1) { runtimeStore.setActiveJourney(capture(slot), any()) }

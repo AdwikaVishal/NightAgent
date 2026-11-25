@@ -1,6 +1,7 @@
 package com.example.nightagent.journey
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.location.Location
 import android.os.Looper
@@ -33,6 +34,7 @@ open class LocationTracker(
         return fine || coarse
     }
 
+    @SuppressLint("MissingPermission") // guarded by hasLocationPermission() below
     open fun locationUpdates(config: JourneyConfig): Flow<JourneyPoint> = callbackFlow {
         if (!hasLocationPermission()) {
             close(SecurityException("Location permission not granted"))
@@ -59,6 +61,7 @@ open class LocationTracker(
         awaitClose { fused.removeLocationUpdates(callback) }
     }
 
+    @SuppressLint("MissingPermission") // guarded by hasLocationPermission() below
     @OptIn(ExperimentalCoroutinesApi::class)
     open suspend fun getCurrentPoint(): JourneyPoint? {
         if (!hasLocationPermission()) return null

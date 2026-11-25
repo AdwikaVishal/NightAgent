@@ -1,7 +1,13 @@
 package com.example.nightagent.guardian.viewmodel
 
 import android.content.Context
-import androidx.test.core.app.ApplicationProvider
+import io.mockk.mockk
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
+import org.junit.After
 import com.example.nightagent.guardian.presentation.GuardianViewModel
 import com.example.nightagent.guardian.repository.GuardianRepositoryImpl
 import com.example.nightagent.model.Guardian
@@ -11,15 +17,22 @@ import org.junit.Test
 import org.junit.Assert
 import com.example.nightagent.model.InvitationStatus
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class GuardianViewModelTest {
 
-    private var viewModel: GuardianViewModel = GuardianViewModel(GuardianRepositoryImpl(ApplicationProvider.getApplicationContext()))
-    private var repository: GuardianRepositoryImpl = GuardianRepositoryImpl(ApplicationProvider.getApplicationContext())
+    private var viewModel: GuardianViewModel = GuardianViewModel(GuardianRepositoryImpl(mockk<Context>(relaxed = true)))
+    private var repository: GuardianRepositoryImpl = GuardianRepositoryImpl(mockk<Context>(relaxed = true))
 
     @Before
     fun setup() {
-        repository = GuardianRepositoryImpl(ApplicationProvider.getApplicationContext())
+        Dispatchers.setMain(UnconfinedTestDispatcher())
+        repository = GuardianRepositoryImpl(mockk<Context>(relaxed = true))
         viewModel = GuardianViewModel(repository)
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
     }
 
     @Test

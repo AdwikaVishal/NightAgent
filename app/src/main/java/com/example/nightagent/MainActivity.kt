@@ -74,32 +74,27 @@ class MainActivity : ComponentActivity() {
             Log.d("AUTH_TEST", "SUCCESS: $uid")
             Log.d("Auth", "User ID: $uid")
             SOSManager.onAuthenticated(this@MainActivity, uid)
+            // Register only after auth is established so the token cannot be
+            // written to the wrong user document during startup.
+            FirebaseMessaging.getInstance().token.addOnCompleteListener { tokenTask ->
+                if (!tokenTask.isSuccessful) {
+                    Log.e("FCM", "Token retrieval failed", tokenTask.exception)
+                    return@addOnCompleteListener
+                }
+                val token = tokenTask.result
+                Log.d("FCM", "Token acquired")
+                AuthManager.saveFCMToken(token)
+                lifecycleScope.launch(Dispatchers.IO) {
+                    VoiceMessageFirebase.updateFcmToken(uid, token)
+                }
+            }
         }.onFailure {
             Log.e("AUTH_TEST", "FAIL: ${it.message}")
             Log.e("Auth", "Login failed: ${it.message}")
         }
     }
 
-    // 🔥 FCM TOKEN — also update in Firestore for voice message push notifications
-    FirebaseMessaging.getInstance().token.addOnCompleteListener { it ->
-        if (it.isSuccessful) {
-            val token = it.result
-            // Temporary debug logging — copy this token for Firebase Console test messaging
-            Log.d("FCM_TOKEN_DEBUG", "Token: $token")
-            Log.d("FCM", "Token acquired (check FCM_TOKEN_DEBUG for full token)")
-            AuthManager.saveFCMToken(token)
-            // Also update in the users collection for voice messaging
-            val uid = FirebaseAuth.getInstance().currentUser?.uid
-            if (uid != null) {
-                lifecycleScope.launch(Dispatchers.IO) {
-                    VoiceMessageFirebase.updateFcmToken(uid, token)
-                }
-            }
-        } else {
-            Log.e("FCM_TOKEN_DEBUG", "Token retrieval failed", it.exception)
-            Log.e("FCM", "Token failed", it.exception)
-        }
-    }
+
         shakeDetector = ShakeDetector(this) {
             TriggerManager.onTrigger(this, TriggerType.SHAKE)
         }

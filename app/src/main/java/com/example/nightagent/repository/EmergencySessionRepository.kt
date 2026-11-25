@@ -114,6 +114,12 @@ class EmergencySessionRepository(
     ): Result<Unit> = withContext(dispatcher) {
         val database = db ?: return@withContext Result.failure(IllegalStateException("Firestore instance unavailable"))
 
+        // Firestore rules require a non-empty audit message on every write.
+        // Callers that do not supply one still get a deterministic description.
+        val effectiveMessage = message.ifBlank {
+            "SOS ${session.triggerType.name} session ${session.id}"
+        }
+
         val sessionData = hashMapOf<String, Any?>(
             "id" to session.id,
             "sessionId" to session.id,
@@ -128,7 +134,7 @@ class EmergencySessionRepository(
             "resolvedAt" to session.resolvedAt,
             "idempotencyKey" to session.idempotencyKey,
             "failureReason" to session.failureReason,
-            "message" to message
+            "message" to effectiveMessage
         )
 
         try {

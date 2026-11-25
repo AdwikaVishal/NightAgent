@@ -12,6 +12,9 @@ import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.example.nightagent.R
 import com.example.nightagent.contacts.ContactManager
+import com.example.nightagent.guardian.repository.GuardianRepositoryImpl
+import com.example.nightagent.journey.JourneyEngine
+import com.example.nightagent.journey.model.JourneyPoint
 import com.example.nightagent.model.EmergencySession
 import com.example.nightagent.model.SOSState
 import com.example.nightagent.model.TriggerType
@@ -52,18 +55,22 @@ object SOSManager {
     private var trackingRunnable: Runnable? = null
     private var autoResolveRunnable: Runnable? = null
     private var acknowledgmentListener: ListenerRegistration? = null
+    private var journeyLocationJob: Job? = null
+    private var lastJourneyLocationForwardedAt = 0L
+    private val notifiedGuardianSessionIds = mutableSetOf<String>()
 
     fun currentSession(): EmergencySession? = engine.currentSession()
 
     /**
-     * Backward-compatible entry point that takes Context and onSOSComplete callback.
+     * Backward-compatible entry point used by journey escalations. The reason is
+     * included in the alert message; it is never stored as a credential.
      */
     fun triggerSOS(
         context: Context,
         reason: String? = null,
         onSOSComplete: () -> Unit = {}
     ) {
-        triggerSOS(context, TriggerType.MANUAL, onSOSComplete)
+        triggerSOSInternal(context, TriggerType.MANUAL, reason, onSOSComplete)
     }
 
     /**
@@ -74,9 +81,18 @@ object SOSManager {
         triggerType: TriggerType = TriggerType.MANUAL,
         onSOSComplete: () -> Unit = {}
     ) {
+        triggerSOSInternal(context, triggerType, null, onSOSComplete)
+    }
+
+    private fun triggerSOSInternal(
+        context: Context,
+        triggerType: TriggerType,
+        reason: String?,
+        onSOSComplete: () -> Unit
+    ) {
         SafetySettings.init(context)
 
-        // 1. Check if an emergency session is already active/initiated/acknowledged
+        // Primary duplicate-SOS guard; the state machine below is the second.
         val existingSession = engine.currentSession()
         if (existingSession != null && existingSession.state in setOf(
                 SOSState.INITIATED,
@@ -86,7 +102,6 @@ object SOSManager {
         ) {
             Log.d(TAG, "SOS trigger ignored: existing session ${existingSession.id} in state ${existingSession.state}")
             return
-        }
         }
 
         this.onCompleteCallback = onSOSComplete
@@ -158,6 +173,9 @@ I need help.$reasonLine"""
                 }
                 // Start listening for guardian acknowledgment on Firestore
                 listenForAcknowledgment(context, activeSession.userId, activeSession.id)
+                // Request guardian push delivery through the canonical repository.
+                // Delivery is never claimed unless the backend confirms it.
+                notifyGuardians(context, activeSession)
             }
 
             // Start live tracking loop driven by session state
@@ -327,6 +345,7 @@ I need help.$reasonLine"""
                 SOSNotification.showActiveSOSNotification(context)
                 startLiveTracking(context)
                 listenForAcknowledgment(context, sessionToRun.userId, sessionToRun.id)
+                notifyGuardians(context, sessionToRun)
             }
 
             // Reschedule auto-resolve safety net with remaining time
@@ -396,6 +415,9 @@ I need help.$reasonLine"""
         applicationContext = null
         mediaPlayer = null
         isLocationLoopRunning = false
+        journeyLocationJob = null
+        lastJourneyLocationForwardedAt = 0L
+        notifiedGuardianSessionIds.clear()
     }
 
     private fun scheduleAutoResolve(context: Context, delayMillis: Long) {
@@ -465,8 +487,78 @@ I need help.$reasonLine"""
         acknowledgmentListener = null
     }
 
+    /**
+     * Requests guardian push delivery only for guardians linked to a Firebase
+     * account. The repository returns only confirmed recipients; failures are
+     * logged and SMS remains the fallback.
+     */
+    private fun notifyGuardians(context: Context, session: EmergencySession) {
+        if (session.id.isBlank() || session.userId.isBlank() || session.userId == "anonymous_user") return
+        if (!notifiedGuardianSessionIds.add(session.id)) {
+            Log.d(TAG, "Guardian notification already requested for session ${session.id}")
+            return
+        }
+        val appCtx = context.applicationContext
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val guardianRepo = GuardianRepositoryImpl(appCtx)
+                val guardians = when (val result = guardianRepo.getGuardians()) {
+                    is com.example.nightagent.guardian.domain.repository.GuardianRepository.ListResult.Success -> result.guardians
+                    else -> emptyList()
+                }
+                val guardianUids = guardians.mapNotNull { guardian ->
+                    val uid = guardian.userId?.trim().orEmpty()
+                    uid.takeIf { it.isNotBlank() && it != "anonymous_user" && it != guardian.guardianId }
+                }.distinct()
+                if (guardianUids.isEmpty()) {
+                    Log.w(TAG, "No linked guardian accounts available for push delivery; SMS fallback remains active")
+                    return@runCatching
+                }
+                val primaryUid = guardians.firstOrNull { it.isPrimary }?.userId?.trim()
+                    ?.takeIf { it in guardianUids }
+                val location = if (session.startLat != null && session.startLng != null) {
+                    session.startLat to session.startLng
+                } else {
+                    null
+                }
+                when (val result = guardianRepo.requestSOSNotification(
+                    sessionId = session.id,
+                    userId = session.userId,
+                    guardianIds = guardianUids,
+                    primaryGuardianId = primaryUid,
+                    location = location,
+                    timestamp = session.createdAt
+                )) {
+                    is com.example.nightagent.guardian.domain.repository.GuardianRepository.ListResult.Success ->
+                        Log.i(TAG, "Guardian push confirmed for ${result.guardians.size} recipient(s)")
+                    is com.example.nightagent.guardian.domain.repository.GuardianRepository.ListResult.Error ->
+                        Log.w(TAG, "Guardian push not confirmed: ${result.message}")
+                }
+            }.onFailure { Log.w(TAG, "Guardian notification request failed: ${it.message}") }
+        }
+    }
+
     private fun startLiveTracking(context: Context) {
         if (isLocationLoopRunning) return
+
+        // An active journey already owns one FusedLocationProvider update stream.
+        // Relay it into the SOS session instead of opening a second GPS poller.
+        val journeyEngine = JourneyEngine.getInstance(context.applicationContext)
+        if (journeyEngine.hasActiveJourney()) {
+            startJourneyLocationRelay(journeyEngine)
+            return
+        }
+
+        val hasLocation = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasLocation) {
+            Log.w(TAG, "SOS live tracking skipped: location permission not granted")
+            return
+        }
+
         isLocationLoopRunning = true
 
         val runnable = object : Runnable {
@@ -500,10 +592,42 @@ I need help.$reasonLine"""
         mainHandler.post(runnable)
     }
 
+    /**
+     * Forwards fixes already collected by the active journey into the SOS
+     * session so there is exactly one location provider and no duplicate polling.
+     */
+    private fun startJourneyLocationRelay(journeyEngine: JourneyEngine) {
+        isLocationLoopRunning = true
+        journeyLocationJob?.cancel()
+        lastJourneyLocationForwardedAt = 0L
+        journeyLocationJob = scope.launch(Dispatchers.IO) {
+            journeyEngine.state.collect { state ->
+                val session = engine.currentSession()
+                val point: JourneyPoint = state.lastLocation ?: return@collect
+                if (session == null || session.state !in setOf(SOSState.ACTIVE, SOSState.ACKNOWLEDGED)) return@collect
+                val now = System.currentTimeMillis()
+                if (now - lastJourneyLocationForwardedAt < LOCATION_INTERVAL_MS) return@collect
+                if (point.timestamp <= lastJourneyLocationForwardedAt) return@collect
+                lastJourneyLocationForwardedAt = now
+                runCatching {
+                    repository.addLocationUpdate(
+                        userId = session.userId,
+                        sessionId = session.id,
+                        latitude = point.latitude,
+                        longitude = point.longitude
+                    )
+                }.onFailure { Log.w(TAG, "Failed to forward journey location to SOS session: ${it.message}") }
+                Log.d(TAG, "Journey location forwarded to SOS session [REDACTED]")
+            }
+        }
+    }
+
     private fun stopLiveTracking() {
         isLocationLoopRunning = false
         trackingRunnable?.let { mainHandler.removeCallbacks(it) }
         trackingRunnable = null
+        journeyLocationJob?.cancel()
+        journeyLocationJob = null
     }
 
     private fun sendEmergencySMS(context: Context, message: String) {

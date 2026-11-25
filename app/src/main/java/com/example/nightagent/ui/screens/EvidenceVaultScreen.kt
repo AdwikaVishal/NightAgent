@@ -1,6 +1,7 @@
 package com.example.nightagent.ui.screens
 
 import android.content.Intent
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -19,21 +20,39 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.nightagent.ui.demo.DemoData
-import com.example.nightagent.ui.demo.EvidenceRecord
 import com.example.nightagent.ui.theme.*
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.ktx.firestore
+import com.google.firebase.ktx.Firebase
+import kotlinx.coroutines.tasks.await
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
- * Evidence Vault screen — currently UI-only.
+ * A record produced by EvidenceUploadWorker at `evidence/{sosId}`.
+ * The vault is read-only; capture and upload remain in the `evidence` package.
+ */
+data class EvidenceVaultRecord(
+    val id: String,
+    val sosId: String,
+    val date: String,
+    val time: String,
+    val audioFiles: Int,
+    val photoFiles: Int,
+    val videoFiles: Int,
+    val sizeMb: Double,
+    val location: String,
+    val sha256Short: String,
+    val uploaded: Boolean
+)
+
+/**
+ * Evidence Vault screen backed by real Firestore evidence records.
  *
- * Lists past SOS evidence records (audio chunks, photos, video, location,
- * SHA-256 integrity hash) from [DemoData]. The real capture pipeline lives in
- * the `evidence` package (EvidenceCaptureService + EvidenceUploadWorker) and is
- * reachable from the SOS flow / Evidence tab; this vault will read the real
- * `evidence/{sosId}` Firestore records once wired up.
- *
- * "Share" uses a real ACTION_SEND intent with the record summary, so it works
- * without any backend.
+ * Only the signed-in owner's records are queried; Firestore rules enforce the
+ * same ownership check server-side. "Share" uses a real ACTION_SEND intent.
  */
 @Composable
 fun EvidenceVaultScreen() {
@@ -41,9 +60,30 @@ fun EvidenceVaultScreen() {
     val context = LocalContext.current
 
     var filter by remember { mutableStateOf("All") }
-    var selected by remember { mutableStateOf<EvidenceRecord?>(null) }
+    var selected by remember { mutableStateOf<EvidenceVaultRecord?>(null) }
+    var records by remember { mutableStateOf<List<EvidenceVaultRecord>>(emptyList()) }
+    var status by remember { mutableStateOf("Loading evidence…") }
 
-    val records = DemoData.evidenceRecords
+    LaunchedEffect(Unit) {
+        val uid = FirebaseAuth.getInstance().currentUser?.uid
+        if (uid.isNullOrBlank()) {
+            status = "Sign in to view your evidence vault"
+            return@LaunchedEffect
+        }
+        try {
+            val snapshot = Firebase.firestore
+                .collection("evidence")
+                .whereEqualTo("userId", uid)
+                .orderBy("timestamp", Query.Direction.DESCENDING)
+                .get()
+                .await()
+            records = snapshot.documents.mapNotNull { doc -> doc.toEvidenceVaultRecord() }
+            status = if (records.isEmpty()) "No evidence captured yet" else ""
+        } catch (e: Exception) {
+            Log.w("EvidenceVault", "Failed to load evidence: ${e.message}")
+            status = "Could not load evidence: ${e.message ?: "unknown error"}"
+        }
+    }
 
     val filtered = when (filter) {
         "Audio" -> records.filter { it.audioFiles > 0 }
@@ -130,8 +170,18 @@ fun EvidenceVaultScreen() {
             }
 
             // ── Records ───────────────────────────────────────────────────
+            if (status.isNotBlank()) {
+                item {
+                    Text(
+                        status,
+                        color = TextSecondary,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                }
+            }
             items(filtered.size) { index ->
-                EvidenceRecordCard(filtered[index], onClick = { selected = filtered[index] })
+                EvidenceVaultRecordCard(filtered[index], onClick = { selected = filtered[index] })
                 Spacer(modifier = Modifier.height(10.dp))
             }
 
@@ -216,7 +266,7 @@ private fun VaultStat(
 }
 
 @Composable
-private fun EvidenceRecordCard(record: EvidenceRecord, onClick: () -> Unit) {
+private fun EvidenceVaultRecordCard(record: EvidenceVaultRecord, onClick: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -290,4 +340,36 @@ private fun DetailRow(label: String, value: String) {
         )
         Text(value, fontSize = 13.sp, color = TextPrimary, fontWeight = FontWeight.Medium)
     }
+}
+
+private fun com.google.firebase.firestore.DocumentSnapshot.toEvidenceVaultRecord(): EvidenceVaultRecord? {
+    val sosId = getString("sosId")?.takeIf { it.isNotBlank() } ?: id
+    val timestamp = getLong("timestamp") ?: 0L
+    val fileUrls = get("fileUrls") as? Map<*, *> ?: emptyMap<Any?, Any?>()
+    val hashes = get("hashes") as? Map<*, *> ?: emptyMap<Any?, Any?>()
+    val sizes = get("fileSizes") as? Map<*, *> ?: emptyMap<Any?, Any?>()
+    val paths = fileUrls.keys.mapNotNull { it as? String }
+    val firstHash = hashes.values.firstOrNull() as? String
+    val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale.US)
+    val timeFormat = SimpleDateFormat("HH:mm", Locale.US)
+    val date = Date(timestamp)
+    val lat = getDouble("latitude")
+    val lng = getDouble("longitude")
+    return EvidenceVaultRecord(
+        id = id,
+        sosId = sosId,
+        date = dateFormat.format(date),
+        time = timeFormat.format(date),
+        audioFiles = paths.count { it.startsWith("audio/") },
+        photoFiles = paths.count { it.startsWith("photos/") },
+        videoFiles = paths.count { it.startsWith("video/") },
+        sizeMb = sizes.values.filterIsInstance<Number>().sumOf { it.toLong() } / 1_000_000.0,
+        location = if (lat != null && lng != null) {
+            String.format(Locale.US, "%.4f, %.4f", lat, lng)
+        } else {
+            "Not recorded"
+        },
+        sha256Short = firstHash?.let { it.take(4) + "…" + it.takeLast(4) } ?: "unavailable",
+        uploaded = true // the record only exists after upload and Firestore write
+    )
 }
