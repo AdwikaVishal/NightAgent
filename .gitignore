@@ -13,3 +13,9 @@
 .externalNativeBuild
 .cxx
 local.properties
+# Generated / dependency directories
+node_modules/
+functions/node_modules/
+# Firebase emulator / debug logs
+firestore-debug.log
+*.log
