@@ -25,8 +25,6 @@ interface GuardianRepository {
     suspend fun setPrimaryGuardian(guardianId: String): GuardianResult
     suspend fun validateGuardian(guardian: Guardian): GuardianResult
     suspend fun requestSOSNotification(sessionId: String, userId: String, guardianIds: List<String>, primaryGuardianId: String?, location: Pair<Double, Double>?, timestamp: Long): ListResult
-    suspend fun acknowledgeEmergency(sessionId: String, ownerUid: String, guardianUid: String? = null): ListResult
-    suspend fun escalateEmergency(sessionId: String, ownerUid: String): ListResult
     suspend fun recordNotificationAttempt(sessionId: String, guardianId: String, status: String, details: String?): ListResult
     suspend fun getCurrentSOSSession(userId: String): GuardianResult
     suspend fun updateGuardianAcknowledgement(invitationId: String, status: InvitationStatus): GuardianResult
@@ -37,9 +35,4 @@ interface GuardianRepository {
     suspend fun acceptInvitation(invitationId: String): GuardianResult
     suspend fun rejectInvitation(invitationId: String): GuardianResult
     suspend fun getInvitations(senderUserId: String): ListResult
-
-    /** Server-backed consent flow. No link exists until the candidate accepts. */
-    suspend fun loadIncomingInvitations(): ListResult
-    suspend fun respondToInvitation(inviteId: String, accept: Boolean): GuardianResult
-    suspend fun unlinkGuardian(ownerUid: String, guardianUid: String): ListResult
 }

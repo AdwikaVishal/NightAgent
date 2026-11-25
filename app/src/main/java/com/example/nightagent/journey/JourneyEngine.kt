@@ -1,6 +1,5 @@
 package com.example.nightagent.journey
 
-import android.app.Application
 import android.content.Context
 import android.util.Log
 import androidx.work.Data
@@ -17,14 +16,9 @@ import java.util.concurrent.TimeUnit
 
 class JourneyEngine internal constructor(
     private val appContext: Context,
-    private val repository: JourneyRepository = FirestoreJourneyRepository(JourneyLocalStore(appContext)),
+    private val repository: JourneyRepository = FirestoreJourneyRepository(),
     private val locationTracker: LocationTracker = LocationTracker(appContext),
     private val runtimeStore: JourneyRuntimeStore = JourneyRuntimeStore(appContext),
-    private val stopTrackingService: () -> Unit = {
-        // The service is only started by production callers; unit tests use a
-        // mocked Context and must never attempt to start/stop Android services.
-        if (appContext is Application) JourneyTrackingService.stop(appContext)
-    },
     private val notifier: JourneyNotifier = DefaultJourneyNotifier(appContext),
     private val checkInWork: CheckInWorkScheduler = DefaultCheckInWorkScheduler(appContext),
     private val sosEscalator: (String) -> Unit = { reason -> SOSManager.triggerSOS(appContext, reason = reason) },
@@ -47,23 +41,9 @@ class JourneyEngine internal constructor(
     fun hasActiveJourney(): Boolean = _state.value.journey?.statusEnum() == JourneyStatus.ACTIVE
 
     suspend fun restoreActiveJourney() {
-        // During cold start Firebase Auth may still be anonymous while the runtime
-        // store holds the authenticated uid from the active journey.
-        val providedUid = userIdProvider()
-        val uid = if (providedUid.isNullOrBlank() || providedUid == "anonymous_user") {
-            runtimeStore.getActiveUserId()
-        } else {
-            providedUid
-        } ?: return
-        val storedJourneyId = runtimeStore.getActiveJourneyId()
-        val active = repository.getActiveJourney(uid).getOrNull()
-            ?: storedJourneyId?.let { repository.getJourney(it).getOrNull() }
-            ?: run {
-                if (storedJourneyId != null) runtimeStore.clearAll()
-                return
-            }
-        if (active.userId != uid || active.statusEnum() != JourneyStatus.ACTIVE) {
-            runtimeStore.clearAll()
+        val uid = userIdProvider() ?: runtimeStore.getActiveUserId() ?: return
+        val active = repository.getActiveJourney(uid).getOrNull() ?: run {
+            if (runtimeStore.getActiveJourneyId() != null) runtimeStore.clearAll()
             return
         }
         _state.update { it.copy(journey = active, error = null) }
@@ -108,9 +88,7 @@ class JourneyEngine internal constructor(
         routePoints: List<RoutePoint> = emptyList()
     ): Result<Journey> = withContext(dispatcher) {
         if (hasActiveJourney()) return@withContext Result.failure(IllegalStateException("A journey is already active"))
-        val uid = userIdProvider()?.takeIf { it.isNotBlank() && it != "anonymous_user" }
-            ?: runtimeStore.getActiveUserId()?.takeIf { it.isNotBlank() && it != "anonymous_user" }
-            ?: return@withContext Result.failure(SecurityException("Sign in before starting a journey"))
+        val uid = userIdProvider() ?: runtimeStore.getActiveUserId() ?: "anonymous_user"
         val existingActive = repository.getActiveJourney(uid).getOrNull()
         if (existingActive != null) {
             _state.update { it.copy(journey = existingActive, error = null) }
@@ -152,22 +130,13 @@ class JourneyEngine internal constructor(
             return@withContext Result.failure(create.exceptionOrNull() ?: Exception("Failed to create journey"))
         }
         repository.saveLocation(journey.journeyId, startPoint).onFailure {
-            Log.w(TAG, "Journey start location queued for sync", it)
-            _state.update { state -> state.copy(pendingSync = true) }
+            Log.w(TAG, "Failed to persist journey start location", it)
         }
         runtimeStore.setActiveJourney(journey.journeyId, uid)
         deviationDetector = RouteDeviationDetector(journey.deviationThresholdMeters, DEFAULT_DEVIATION_SUSTAIN_COUNT)
         lastPoint = startPoint
         escalationDedup.clear()
-        _state.update {
-            it.copy(
-                journey = journey,
-                isLoading = false,
-                error = null,
-                lastLocation = startPoint,
-                pendingSync = repository.hasPendingSync()
-            )
-        }
+        _state.update { it.copy(journey = journey, isLoading = false, error = null, lastLocation = startPoint) }
         startMonitoring(journey)
         scheduleNextCheckIn(journey)
         Result.success(journey)
@@ -194,8 +163,7 @@ class JourneyEngine internal constructor(
         lastPoint = point
         _state.update { it.copy(lastLocation = point) }
         repository.saveLocation(journeyId, point).onFailure {
-            Log.w(TAG, "Live location queued for sync for $journeyId", it)
-            _state.update { state -> state.copy(pendingSync = true) }
+            Log.w(TAG, "Failed to persist live location for $journeyId", it)
         }
 
         // Deviation detection
@@ -384,20 +352,7 @@ class JourneyEngine internal constructor(
         )
         if (status == JourneyStatus.COMPLETED) updates["actualArrivalTime"] = now
         val res = repository.updateJourney(j.journeyId, updates)
-        if (res.isFailure) {
-            // Keep the active lifecycle and recovery state intact until the
-            // terminal update is acknowledged by Firestore.
-            _state.update {
-                it.copy(
-                    pendingSync = true,
-                    error = "Journey completion is queued locally: ${res.exceptionOrNull()?.message ?: "remote sync unavailable"}"
-                )
-            }
-            Log.w(TAG, "Journey ${j.journeyId} completion pending remote sync", res.exceptionOrNull())
-            return res
-        }
         stopMonitoring()
-        stopTrackingService()
         cancelCheckInWatchdogs(j.journeyId)
         runtimeStore.clearAll()
         notifier.cancelAll()
@@ -409,12 +364,10 @@ class JourneyEngine internal constructor(
                     isActive = false,
                     actualArrivalTime = if (status == JourneyStatus.COMPLETED) now else j.actualArrivalTime
                 ),
-                pendingCheckIn = null,
-                pendingSync = false,
-                error = null
+                pendingCheckIn = null
             )
         }
-        Log.i(TAG, "Journey ${j.journeyId} finished remotely: $status ($reason)")
+        Log.i(TAG, "Journey ${j.journeyId} finished: $status ($reason)")
         return res
     }
 
@@ -426,26 +379,6 @@ class JourneyEngine internal constructor(
     }
 
     fun clearError() { _state.update { it.copy(error = null) } }
-
-    /** Replay queued offline writes once connectivity/auth is available. */
-    suspend fun retryPendingSync(): Result<Unit> {
-        val uid = userIdProvider()?.takeIf { it.isNotBlank() && it != "anonymous_user" }
-            ?: runtimeStore.getActiveUserId()
-            ?: return Result.failure(SecurityException("Sign in before retrying journey sync"))
-        val result = repository.retryPendingSync(uid)
-        _state.update { it.copy(pendingSync = repository.hasPendingSync(), error = result.exceptionOrNull()?.message) }
-        return result
-    }
-
-    /** Clear cached journey state when the signed-in account changes. */
-    fun clearCachedJourney() {
-        stopMonitoring()
-        stopTrackingService()
-        cancelCheckInWatchdogs(_state.value.journey?.journeyId.orEmpty())
-        runtimeStore.clearAll()
-        repository.clearLocalState()
-        _state.update { JourneyUiState() }
-    }
 
     private fun enqueueCheckInWatchdog(journeyId: String, checkInId: String, timeoutMs: Long) {
         checkInWork.enqueue(journeyId, checkInId, timeoutMs)
@@ -510,6 +443,5 @@ data class JourneyUiState(
     val arrivalNearby: Boolean = false,
     val lastEscalation: Pair<JourneyEventType, String>? = null,
     val isLoading: Boolean = false,
-    val pendingSync: Boolean = false,
     val error: String? = null
 )

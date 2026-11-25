@@ -56,7 +56,6 @@ fun GuardianScreen() {
 
     LaunchedEffect(Unit) {
         viewModel.loadGuardians()
-        viewModel.loadIncomingInvitations()
     }
 
     Scaffold(
@@ -85,61 +84,28 @@ fun GuardianScreen() {
                 .padding(paddingValues)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                if (uiState.incomingInvitations.isNotEmpty()) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
-                        )
-                    ) {
-                        Column(Modifier.padding(16.dp)) {
-                            Text("Guardian requests", fontWeight = FontWeight.Bold)
-                            uiState.incomingInvitations.forEach { invitation ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = invitation.name,
-                                        modifier = Modifier.weight(1f),
-                                        fontSize = 13.sp
-                                    )
-                                    TextButton(onClick = {
-                                        viewModel.respondToInvitation(invitation.guardianId, true)
-                                    }) { Text("Accept") }
-                                    TextButton(onClick = {
-                                        viewModel.respondToInvitation(invitation.guardianId, false)
-                                    }) { Text("Decline") }
-                                }
-                            }
-                        }
+            if (guardianList.isEmpty()) {
+                EmptyState(
+                    icon = Icons.Default.Person,
+                    title = "No Guardians Added",
+                    subtitle = "Add guardians to receive SOS alerts and share location"
+                )
+            } else {
+                GuardianList(
+                    guardians = guardianList,
+                    onDelete = { guardian ->
+                        selectedGuardian = guardian
+                        dialogType = "deleteConfirm"
+                    },
+                    onSetPrimary = { guardianId ->
+                        viewModel.setPrimaryGuardian(guardianId)
+                        viewModel.loadGuardians()
+                    },
+                    onEdit = { guardian ->
+                        selectedGuardian = guardian
+                        dialogType = "edit"
                     }
-                }
-
-                if (guardianList.isEmpty()) {
-                    EmptyState(
-                        icon = Icons.Default.Person,
-                        title = "No Guardians Added",
-                        subtitle = "Add guardians to receive SOS alerts and share location"
-                    )
-                } else {
-                    GuardianList(
-                        guardians = guardianList,
-                        onDelete = { guardian ->
-                            selectedGuardian = guardian
-                            dialogType = "deleteConfirm"
-                        },
-                        onSetPrimary = { guardianId ->
-                            viewModel.setPrimaryGuardian(guardianId)
-                            viewModel.loadGuardians()
-                        },
-                        onEdit = { guardian ->
-                            selectedGuardian = guardian
-                            dialogType = "edit"
-                        }
-                    )
-                }
+                )
             }
         }
     }

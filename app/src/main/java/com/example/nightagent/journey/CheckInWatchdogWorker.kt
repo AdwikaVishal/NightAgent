@@ -11,7 +11,7 @@ class CheckInWatchdogWorker(appContext: Context, params: WorkerParameters) : Cor
         val journeyId = inputData.getString(KEY_JOURNEY_ID) ?: return Result.success()
         val checkInId = inputData.getString(KEY_CHECKIN_ID) ?: return Result.success()
         val engine = JourneyEngine.getInstance(applicationContext)
-        val repo = FirestoreJourneyRepository(JourneyLocalStore(applicationContext))
+        val repo = FirestoreJourneyRepository()
         val journey = repo.getJourney(journeyId).getOrNull() ?: return Result.success()
         if (journey.statusEnum() != JourneyStatus.ACTIVE) return Result.success()
         val checkIn = repo.getCheckIns(journeyId).getOrNull()?.find { it.checkInId == checkInId } ?: return Result.success()

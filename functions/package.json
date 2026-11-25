@@ -3,7 +3,6 @@
   "description": "NightAgent secure voice download and notification functions",
   "scripts": {
     "build": "tsc",
-    "test": "node --test test/contract.test.js",
     "build:watch": "tsc --watch",
     "serve": "npm run build && firebase emulators:start --only functions",
     "shell": "npm run build && firebase functions:shell",

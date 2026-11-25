@@ -1,19 +1,9 @@
 {
   "firestore": {
-    "rules": "firestore.rules",
-    "indexes": "firestore.indexes.json"
-  },
-  "functions": {
-    "source": "functions",
-    "runtime": "nodejs20"
+    "rules": "firestore.rules"
   },
   "storage": {
     "rules": "storage.rules"
-  },
-  "hosting": {
-    "public": "live-tracker",
-    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
-    "rewrites": [{ "source": "**", "destination": "/index.html" }]
   },
   "emulators": {
     "auth": {
@@ -24,9 +14,6 @@
     },
     "storage": {
       "port": 9199
-    },
-    "functions": {
-      "port": 5001
     },
     "ui": {
       "enabled": true,

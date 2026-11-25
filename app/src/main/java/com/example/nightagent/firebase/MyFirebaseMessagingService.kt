@@ -9,7 +9,6 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.nightagent.MainActivity
 import com.example.nightagent.R
-import com.example.nightagent.firebase.SosAlertActionReceiver.Companion.actionPendingIntent
 import com.example.nightagent.notifications.NotificationHelper
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
@@ -24,14 +23,7 @@ import com.google.firebase.messaging.RemoteMessage
  *     type:        "voice_message"
  *     senderId:    "<uid>"
  *     senderName:  "<display name or phone>"
- *     chatId: "<canonical chat id>"   (conversationId accepted for legacy senders)
- *   }
- *
- * Emergency payload sent by `sendEmergencyNotification`:
- *
- *   data: {
- *     type: "sos_alert", sosSessionId: "...", ownerUid: "...",
- *     latitude: "...", longitude: "..."
+ *     conversationId: "<convId>"
  *   }
  *
  * When the app is in the background, FCM delivers this as a data-only message
@@ -46,7 +38,6 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
 
         when (data["type"]) {
             "voice_message" -> handleVoiceMessageNotification(data)
-            "sos_alert"     -> handleSosAlertNotification(data)
             else            -> handleGenericNotification(remoteMessage)
         }
     }
@@ -56,14 +47,12 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
     private fun handleVoiceMessageNotification(data: Map<String, String>) {
         val senderName     = data["senderName"] ?: "Someone"
         val senderId       = data["senderId"] ?: return
-        // The canonical callable sends `chatId`; older senders used `conversationId`.
-        val chatId = data["chatId"] ?: data["conversationId"].orEmpty()
+        val conversationId = data["conversationId"] ?: ""
 
         // Deep-link intent: opens MainActivity which navigates to voicechat/{senderId}
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("navigate_to", "voicechat/$senderId")
-            putExtra("chatId", chatId)
         }
         val pendingIntent = PendingIntent.getActivity(
             this, senderId.hashCode(), intent,
@@ -83,61 +72,6 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
 
         val nm = getSystemService(NotificationManager::class.java)
         nm.notify(senderId.hashCode(), notification)
-    }
-
-    // ── Emergency alert notification ──────────────────────────────────────────
-
-    private fun handleSosAlertNotification(data: Map<String, String>) {
-        val sessionId = data["sosSessionId"]?.takeIf { it.isNotBlank() } ?: return
-        val ownerUid = data["ownerUid"].orEmpty()
-        val hasLocation = !data["latitude"].isNullOrBlank() && !data["longitude"].isNullOrBlank()
-
-        // Deep-link into the guardian area with the alert context attached.
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("navigate_to", "guardians")
-            putExtra("sosSessionId", sessionId)
-            putExtra("ownerUid", ownerUid)
-            putExtra("latitude", data["latitude"])
-            putExtra("longitude", data["longitude"])
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            this, sessionId.hashCode(), intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        createSosAlertChannel()
-        val notification = NotificationCompat.Builder(this, CHANNEL_SOS_ALERT)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("Emergency alert from a NightAgent contact")
-            .setContentText(if (hasLocation) "Tap to view their shared location." else "They have requested help.")
-            .setColor(android.graphics.Color.RED)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setAutoCancel(true)
-            .setContentIntent(pendingIntent)
-            .addAction(
-                NotificationCompat.Action.Builder(
-                    android.R.drawable.ic_menu_send,
-                    "Acknowledge",
-                    actionPendingIntent(
-                        this, SosAlertActionReceiver.ACTION_ACKNOWLEDGE, sessionId, ownerUid
-                    )
-                ).build()
-            )
-            .addAction(
-                NotificationCompat.Action.Builder(
-                    android.R.drawable.ic_dialog_alert,
-                    "Escalate",
-                    actionPendingIntent(
-                        this, SosAlertActionReceiver.ACTION_ESCALATE, sessionId, ownerUid
-                    )
-                ).build()
-            )
-            .build()
-
-        getSystemService(NotificationManager::class.java)
-            .notify(sessionId.hashCode(), notification)
     }
 
     // ── Generic notification ──────────────────────────────────────────────────
@@ -177,24 +111,8 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
         }
     }
 
-    private fun createSosAlertChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_SOS_ALERT,
-                "Emergency Alerts",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "SOS alerts from your contacts"
-                enableVibration(true)
-            }
-            getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(channel)
-        }
-    }
-
     companion object {
         private const val TAG          = "MyFCMService"
         private const val CHANNEL_VOICE = "voice_messages_channel"
-        private const val CHANNEL_SOS_ALERT = "sos_alerts_channel"
     }
 }

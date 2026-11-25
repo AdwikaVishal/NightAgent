@@ -4,59 +4,55 @@ import android.content.Context
 import android.util.Log
 import com.example.nightagent.journey.JourneyEngine
 import com.example.nightagent.journey.JourneyTrackingService
-import com.example.nightagent.journey.model.Journey
 import com.example.nightagent.journey.model.JourneyStatus
-import com.example.nightagent.journey.model.RoutePoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 
 /**
- * Legacy compatibility facade. The only Safe Journey lifecycle is owned by
- * JourneyEngine; this object contains no GPS loop, scheduler, or SOS lifecycle.
- * Callers should supply a real destination so arrival and route logic remain
- * meaningful.
+ * Legacy compatibility facade. New implementation lives in com.example.nightagent.journey.
+ * Kept to avoid breaking existing callers while Person 3 migration is completed.
+ * Safe Journey lifecycle (tracking, check-ins, deviation detection, SOS escalation) is owned by
+ * JourneyEngine; this facade delegates start/stop to it so there is a single location tracker
+ * and a single background service.
  */
 object SafeWalkManager {
     private const val TAG = "SafeWalkManager"
 
-    fun startSafeWalk(
-        context: Context,
-        destinationName: String,
-        destinationLat: Double,
-        destinationLng: Double,
-        expectedArrivalTime: Long,
-        routePoints: List<RoutePoint> = emptyList()
-    ) {
+    fun startSafeWalk(context: Context) {
         val appCtx = context.applicationContext
         val engine = JourneyEngine.getInstance(appCtx)
-        if (engine.hasActiveJourney()) {
-            Log.w(TAG, "Safe walk ignored: another journey is already active")
-            return
-        }
+        if (engine.hasActiveJourney()) return
         CoroutineScope(Dispatchers.Default).launch {
-            val result = engine.startJourney(
-                destinationName = destinationName,
-                destinationLat = destinationLat,
-                destinationLng = destinationLng,
-                expectedArrivalTime = expectedArrivalTime,
-                routePoints = routePoints
-            )
-            if (result.isSuccess) {
-                JourneyTrackingService.start(appCtx)
-            } else {
-                Log.e(TAG, "Failed to start SafeWalk: ${result.exceptionOrNull()?.message}")
+            try {
+                @OptIn(ExperimentalCoroutinesApi::class)
+                val loc = kotlinx.coroutines.suspendCancellableCoroutine<android.location.Location?> { cont ->
+                    LocationProvider.getLocation(appCtx) { l -> if (cont.isActive) cont.resume(l) {} }
+                }
+                if (loc == null) {
+                    Log.w(TAG, "Cannot start SafeWalk: location unavailable")
+                    return@launch
+                }
+                val eta = System.currentTimeMillis() + 30 * 60_000L
+                val res = engine.startJourney(
+                    destinationName = "Safe Walk",
+                    destinationLat = loc.latitude,
+                    destinationLng = loc.longitude,
+                    expectedArrivalTime = eta,
+                    checkInIntervalMinutes = 5,
+                    checkInResponseTimeoutSeconds = 120,
+                    routePoints = emptyList()
+                )
+                if (res.isSuccess) {
+                    JourneyTrackingService.start(appCtx)
+                } else {
+                    Log.e(TAG, "Failed to start SafeWalk: ${res.exceptionOrNull()?.message}")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "startSafeWalk failed", e)
             }
         }
-    }
-
-    /**
-     * Retained for source compatibility only: without a destination the engine
-     * cannot do arrival or deviation detection, so delegating would create an
-     * invalid journey. Use the overload above.
-     */
-    fun startSafeWalk(context: Context) {
-        Log.w(TAG, "startSafeWalk requires an explicit destination; no journey started")
     }
 
     fun stopSafeWalk(context: Context) {
@@ -65,8 +61,8 @@ object SafeWalkManager {
         CoroutineScope(Dispatchers.Default).launch {
             try {
                 if (engine.state.value.journey?.statusEnum() == JourneyStatus.ACTIVE) {
-                    // Engine also stops the foreground service and watchdog work.
                     engine.cancelJourney("Safe walk stopped")
+                    JourneyTrackingService.stop(appCtx)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "stopSafeWalk failed", e)

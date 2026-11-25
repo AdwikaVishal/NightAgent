@@ -32,19 +32,13 @@ class EvidenceUploadWorker(
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val sosId  = inputData.getString(KEY_SOS_ID)  ?: return@withContext Result.failure()
         val userId = inputData.getString(KEY_USER_ID) ?: return@withContext Result.failure()
-        if (userId.isBlank() || userId == "unknown") {
-            Log.w(TAG, "Refusing to upload evidence without an authenticated user")
-            return@withContext Result.failure()
-        }
 
         val evidenceDir = File(applicationContext.getExternalFilesDir(null), "Evidence/$sosId")
-        migrateLegacyTempAudio(evidenceDir)
         if (!evidenceDir.exists()) return@withContext Result.failure()
 
         val evidenceManager = EvidenceManager(applicationContext)
         val uploadedUrls = mutableMapOf<String, String>()
         val hashes       = mutableMapOf<String, String>()
-        val fileSizes    = mutableMapOf<String, Long>()
 
         try {
             // Walk all sub-directories (audio/, photos/, video/)
@@ -67,26 +61,18 @@ class EvidenceUploadWorker(
 
                     uploadedUrls[relativePath] = url
                     hashes[relativePath]       = evidenceManager.sha256(file)
-                    fileSizes[relativePath]    = file.length()
 
                     Log.d(TAG, "Uploaded: $relativePath → $url")
                 }
 
             // Write Firestore evidence record
-            val record = mutableMapOf<String, Any>(
+            val record = mapOf(
                 "userId"    to userId,
                 "sosId"     to sosId,
                 "timestamp" to System.currentTimeMillis(),
                 "fileUrls"  to uploadedUrls,
-                "hashes"    to hashes,
-                "fileSizes" to fileSizes
+                "hashes"    to hashes
             )
-            val latitude = inputData.getString(KEY_LATITUDE)?.toDoubleOrNull()
-            val longitude = inputData.getString(KEY_LONGITUDE)?.toDoubleOrNull()
-            if (latitude != null && longitude != null) {
-                record["latitude"] = latitude
-                record["longitude"] = longitude
-            }
             FirebaseConfig.firestore
                 .collection("evidence")
                 .document(sosId)
@@ -105,9 +91,6 @@ class EvidenceUploadWorker(
         private const val TAG         = "EvidenceUploadWorker"
         const val KEY_SOS_ID          = "sos_id"
         const val KEY_USER_ID         = "user_id"
-        const val KEY_LATITUDE        = "latitude"
-        const val KEY_LONGITUDE       = "longitude"
-        const val UPLOAD_TAG          = "evidence_upload"
 
         /**
          * Resolve a Firebase Storage content type from a file's extension.
@@ -123,51 +106,14 @@ class EvidenceUploadWorker(
                 "mp4" -> "video/mp4"
                 "mov" -> "video/quicktime"
                 "avi" -> "video/x-msvideo"
-                "jpg", "jpeg" -> "image/jpeg"
-                "png" -> "image/png"
                 else  -> null
             }
         }
 
-        /**
-         * Older recording sessions wrote chunks to Evidence/temp before the SOS
-         * id was available. Move them under the canonical session directory so
-         * a single upload pass covers all evidence for this SOS.
-         */
-        private fun migrateLegacyTempAudio(evidenceDir: File) {
-            val tempDir = File(evidenceDir.parentFile, "temp")
-            val targetDir = File(evidenceDir, "audio")
-            val chunks = tempDir.takeIf { it.exists() }
-                ?.listFiles { file -> file.isFile && file.extension.equals("m4a", true) }
-                ?: return
-            chunks.forEach { file ->
-                targetDir.mkdirs()
-                if (!file.renameTo(File(targetDir, file.name))) {
-                    Log.w(TAG, "Could not migrate legacy audio chunk ${file.name}")
-                }
-            }
-        }
-
-        fun enqueue(
-            context: Context,
-            sosId: String,
-            userId: String,
-            latitude: Double? = null,
-            longitude: Double? = null
-        ) {
-            if (userId.isBlank() || userId == "unknown") {
-                Log.w(TAG, "Not enqueuing evidence upload without an authenticated user")
-                return
-            }
-            val data = workDataOf(
-                KEY_SOS_ID to sosId,
-                KEY_USER_ID to userId,
-                KEY_LATITUDE to latitude?.toString(),
-                KEY_LONGITUDE to longitude?.toString()
-            )
+        fun enqueue(context: Context, sosId: String, userId: String) {
+            val data = workDataOf(KEY_SOS_ID to sosId, KEY_USER_ID to userId)
             val request = OneTimeWorkRequestBuilder<EvidenceUploadWorker>()
                 .setInputData(data)
-                .addTag(UPLOAD_TAG)
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)

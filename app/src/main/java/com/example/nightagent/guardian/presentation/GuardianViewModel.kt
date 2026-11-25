@@ -18,7 +18,6 @@ data class GuardianUiState(
     val isLoading: Boolean = false,
     val guardians: List<Guardian> = emptyList(),
     val primaryGuardian: Guardian? = null,
-    val incomingInvitations: List<Guardian> = emptyList(),
     val errorMessage: String? = null,
     val successMessage: String? = null
 )
@@ -85,34 +84,6 @@ class GuardianViewModel(
                         errorMessage = result.message,
                         isLoading = false
                     )
-            }
-        }
-    }
-
-    fun loadIncomingInvitations() {
-        viewModelScope.launch {
-            val result = repository.loadIncomingInvitations()
-            when (result) {
-                is com.example.nightagent.guardian.domain.repository.GuardianRepository.ListResult.Success ->
-                    _uiState.value = _uiState.value.copy(incomingInvitations = result.guardians)
-                is com.example.nightagent.guardian.domain.repository.GuardianRepository.ListResult.Error ->
-                    _uiState.value = _uiState.value.copy(errorMessage = result.message)
-            }
-        }
-    }
-
-    fun respondToInvitation(inviteId: String, accept: Boolean) {
-        viewModelScope.launch {
-            val result = repository.respondToInvitation(inviteId, accept)
-            when (result) {
-                is com.example.nightagent.guardian.domain.repository.GuardianRepository.GuardianResult.Success -> {
-                    _uiState.value = _uiState.value.copy(
-                        successMessage = if (accept) "Guardian invitation accepted" else "Guardian invitation declined"
-                    )
-                    loadIncomingInvitations()
-                }
-                is com.example.nightagent.guardian.domain.repository.GuardianRepository.GuardianResult.Error ->
-                    _uiState.value = _uiState.value.copy(errorMessage = result.message)
             }
         }
     }

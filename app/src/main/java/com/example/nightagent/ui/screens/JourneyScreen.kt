@@ -84,7 +84,7 @@ fun JourneyScreen(onOpenSafeWalk: () -> Unit = {}, vm: JourneyViewModel = viewMo
         }
 
         if (activeJourney != null) {
-            item { ActiveJourneyCard(activeJourney, state.pendingCheckIn != null, state.distanceToDestinationMeters, state.distanceFromRouteMeters, state.lastLocation, state.pendingSync, onRetry = { vm.retryPendingSync() }, onOpenSafeWalk, onSafe = { vm.acknowledgeCheckIn() }, onHelp = { vm.requestHelp() }, onArrived = { vm.completeJourney() }, onCancel = { vm.cancelJourney() }) }
+            item { ActiveJourneyCard(activeJourney, state.pendingCheckIn != null, state.distanceToDestinationMeters, state.distanceFromRouteMeters, onOpenSafeWalk, onSafe = { vm.acknowledgeCheckIn() }, onHelp = { vm.requestHelp() }, onArrived = { vm.completeJourney() }, onCancel = { vm.cancelJourney() }) }
         } else {
             item {
                 Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
@@ -206,26 +206,12 @@ fun JourneyScreen(onOpenSafeWalk: () -> Unit = {}, vm: JourneyViewModel = viewMo
 }
 
 @Composable
-private fun ActiveJourneyCard(j: Journey, pendingCheckIn: Boolean, distDest: Float?, distRoute: Float?, lastLocation: com.example.nightagent.journey.model.JourneyPoint?, pendingSync: Boolean, onRetry: () -> Unit, onOpenSafeWalk: () -> Unit, onSafe: () -> Unit, onHelp: () -> Unit, onArrived: () -> Unit, onCancel: () -> Unit) {
+private fun ActiveJourneyCard(j: Journey, pendingCheckIn: Boolean, distDest: Float?, distRoute: Float?, onOpenSafeWalk: () -> Unit, onSafe: () -> Unit, onHelp: () -> Unit, onArrived: () -> Unit, onCancel: () -> Unit) {
     Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Lavender.copy(alpha = 0.18f))) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Journey in progress", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            Text("Status: ${j.status}", color = TextSecondary, fontSize = 13.sp)
-            if (pendingSync) {
-                Text("Saved on this device; waiting for Firestore sync.", color = Color(0xFFFF9800), fontSize = 13.sp)
-                OutlinedButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Retry sync now") }
-            }
             Text("To: ${j.destinationName}", color = TextSecondary)
             Text("ETA: ${fmtTime(j.expectedArrivalTime)}", fontSize = 13.sp)
-            Text("Route points: ${j.routePoints.size}", fontSize = 13.sp, color = TextSecondary)
-            lastLocation?.let {
-                Text(
-                    "Last location: ${"%.5f".format(it.latitude)}, ${"%.5f".format(it.longitude)} " +
-                        "(±${it.accuracy.toInt()}m) at ${fmtTime(it.timestamp)}",
-                    fontSize = 12.sp,
-                    color = TextSecondary
-                )
-            }
             distDest?.let { Text("Distance to destination: ${"%.0f".format(it)} m", fontSize = 13.sp) }
             distRoute?.let { Text("Distance from route: ${"%.0f".format(it)} m", fontSize = 13.sp) }
             if (pendingCheckIn) {

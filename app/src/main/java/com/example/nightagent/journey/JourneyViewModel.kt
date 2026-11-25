@@ -9,7 +9,7 @@ import kotlinx.coroutines.launch
 
 class JourneyViewModel(application: Application) : AndroidViewModel(application) {
     private val engine = JourneyEngine.getInstance(application)
-    private val repo: JourneyRepository = FirestoreJourneyRepository(JourneyLocalStore(application))
+    private val repo: JourneyRepository = FirestoreJourneyRepository()
 
     val uiState: StateFlow<JourneyUiState> = engine.state
 
@@ -22,23 +22,6 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
     init {
         viewModelScope.launch { engine.restoreActiveJourney() }
         refreshHistory()
-        var lastAuthUid: String? = null
-        com.example.nightagent.firebase.AuthManager.addAuthStateListener { uid ->
-            if (lastAuthUid != null && uid != lastAuthUid) {
-                // Sign-out or account switch: cached location/destination must not
-                // leak into the next account's journey UI.
-                engine.clearCachedJourney()
-                refreshHistory()
-            }
-            lastAuthUid = uid
-        }
-    }
-
-    fun retryPendingSync() {
-        viewModelScope.launch {
-            engine.retryPendingSync()
-            refreshHistory()
-        }
     }
 
     fun startJourney(
@@ -69,20 +52,16 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             if (c != null) engine.requestHelpOnCheckIn(j.journeyId, c.checkInId)
             else {
-                // Manual help without a pending check-in still carries journey context.
-                com.example.nightagent.sos.SOSManager.triggerSOS(
-                    getApplication(),
-                    reason = "Manual help during journey ${j.journeyId}"
-                )
+                // manual help without pending check-in
+                com.example.nightagent.sos.SOSManager.triggerSOS(getApplication())
             }
         }
     }
 
     fun completeJourney() {
         viewModelScope.launch {
-            // JourneyEngine stops monitoring and the foreground service itself so
-            // notification actions and UI actions share one lifecycle.
             engine.completeJourney()
+            JourneyTrackingService.stop(getApplication())
             refreshHistory()
         }
     }
@@ -90,6 +69,7 @@ class JourneyViewModel(application: Application) : AndroidViewModel(application)
     fun cancelJourney() {
         viewModelScope.launch {
             engine.cancelJourney()
+            JourneyTrackingService.stop(getApplication())
             refreshHistory()
         }
     }

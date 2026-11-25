@@ -52,9 +52,8 @@ class EvidenceCaptureService : LifecycleService() {
             when (intent?.action) {
                 ACTION_START -> {
                     sosId = intent.getStringExtra(EXTRA_SOS_ID) ?: System.currentTimeMillis().toString()
-                    if (startForegroundCompat()) {
-                        beginCapture(sosId)
-                    }
+                    startForegroundCompat()
+                    beginCapture()
                 }
                 ACTION_STOP -> endCapture()
             }
@@ -73,9 +72,9 @@ class EvidenceCaptureService : LifecycleService() {
 
     // ── Internal ──────────────────────────────────────────────────────────────
 
-    private fun startForegroundCompat(): Boolean {
+    private fun startForegroundCompat() {
         val notification = buildNotification("Recording audio & location…")
-        return try {
+        try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 var serviceType = 0
                 val hasAudio = ContextCompat.checkSelfPermission(
@@ -97,34 +96,25 @@ class EvidenceCaptureService : LifecycleService() {
 
                 if (serviceType != 0) {
                     startForeground(NOTIFICATION_ID, notification, serviceType)
-                    true
                 } else {
-                    // A service started via startForegroundService must call
-                    // startForeground within the timeout. We cannot claim a type
-                    // without its permission, so do not start; caller should gate.
-                    Log.w(TAG, "No foreground service permissions granted — not starting evidence capture")
+                    Log.w(TAG, "No foreground service permissions granted — stopping evidence capture")
                     stopSelf()
-                    false
                 }
             } else {
                 startForeground(NOTIFICATION_ID, notification)
-                true
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to start foreground compat: ${e.message}")
-            // Best effort: avoid FGS timeout if the service was started as FGS.
-            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
             stopSelf()
-            false
         }
     }
 
-    private fun beginCapture(sessionId: String) {
+    private fun beginCapture() {
         LocationProvider.getLocation(this) { loc -> lastLocation = loc }
 
         if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
             == PackageManager.PERMISSION_GRANTED) {
-            evidenceManager.startChunkedAudioRecording(sessionId)
+            evidenceManager.startChunkedAudioRecording()
         } else {
             Log.w(TAG, "RECORD_AUDIO not granted — skipping audio recording")
         }
@@ -132,18 +122,8 @@ class EvidenceCaptureService : LifecycleService() {
 
     private fun endCapture() {
         runCatching { evidenceManager.stopAudioRecording() }
-        val uid = FirebaseConfig.auth.currentUser?.uid
-        if (uid.isNullOrBlank()) {
-            Log.w(TAG, "No authenticated user — skipping evidence upload for $sosId")
-        } else {
-            EvidenceUploadWorker.enqueue(
-                context = this,
-                sosId = sosId,
-                userId = uid,
-                latitude = lastLocation?.latitude,
-                longitude = lastLocation?.longitude
-            )
-        }
+        val uid = FirebaseConfig.auth.currentUser?.uid ?: "unknown"
+        EvidenceUploadWorker.enqueue(this, sosId, uid)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

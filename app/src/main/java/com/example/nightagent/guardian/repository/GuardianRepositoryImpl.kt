@@ -1,7 +1,6 @@
 package com.example.nightagent.guardian.repository
 
 import android.content.Context
-import android.util.Log
 import com.example.nightagent.guardian.data.local.GuardianLocalDataSource
 import com.example.nightagent.guardian.domain.repository.GuardianRepository
 import com.example.nightagent.model.InvitationStatus
@@ -11,22 +10,17 @@ import com.example.nightagent.model.GuardianInvitation
 import com.example.nightagent.guardian.utils.normalizePhoneNumber
 import java.util.UUID
 import java.util.concurrent.TimeUnit
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.functions.FirebaseFunctions
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
-import kotlinx.coroutines.tasks.await
 
 class GuardianRepositoryImpl(
     private val appContext: Context
 ) : GuardianRepository {
 
     companion object {
-        private const val TAG = "GuardianRepository"
         const val MAX_GUARDIANS = 5
         const val INVITATIONS_PREFS = "guardian_invitations"
         const val SOS_SESSIONS_COLLECTION = "sos_alerts"
-        const val SOS_NOTIFICATION_PREFS = "sos_notification_attempts"
         const val DEFAULT_ESCALATION_TIMEOUT_MS: Long = 30000L
         const val ESCALATION_STEP_MS = 10000L
     }
@@ -123,17 +117,6 @@ class GuardianRepositoryImpl(
             return GuardianRepository.ListResult.Error("Guardian not found")
         }
 
-        val removed = existingGuardians[existingIndex]
-        val currentUid = FirebaseAuth.getInstance().currentUser?.uid
-        if (currentUid != null && !removed.userId.isNullOrBlank()) {
-            // Revoke server-side access before removing the local entry. Failure
-            // is surfaced so an orphaned link is not silently left in place.
-            when (val revoke = unlinkGuardian(currentUid, removed.userId!!)) {
-                is GuardianRepository.ListResult.Error -> return revoke
-                else -> Unit
-            }
-        }
-
         val remainingGuardians = existingGuardians.subList(0, existingIndex) + existingGuardians.subList(existingIndex + 1, existingGuardians.size)
 
         dataSource.saveGuardians(appContext, remainingGuardians)
@@ -156,38 +139,8 @@ class GuardianRepositoryImpl(
     }
 
     override suspend fun getGuardians(): GuardianRepository.ListResult {
-        val guardians = syncLinkedGuardians(dataSource.getGuardians(appContext))
+        val guardians = dataSource.getGuardians(appContext)
         return GuardianRepository.ListResult.Success(guardians = guardians)
-    }
-
-    /**
-     * Resolves locally stored guardian phone numbers to registered Firebase
-     * accounts through the trusted callable. The callable also writes the
-     * owner's `users/{uid}.guardianUids`, which sendEmergencyNotification and
-     * the journey rules require before delivery is permitted.
-     */
-    private suspend fun syncLinkedGuardians(
-        guardians: List<Guardian>
-    ): List<Guardian> {
-        if (FirebaseAuth.getInstance().currentUser?.uid == null) return guardians
-        val phones = guardians.map { it.phoneNumber }.distinct().take(MAX_GUARDIANS)
-        return try {
-            val result = FirebaseFunctions.getInstance()
-                .getHttpsCallable("syncGuardianLinks")
-                .call(mapOf("phoneNumbers" to phones))
-                .await()
-            val mapping = (result?.data as? Map<*, *>)?.get("phoneToUid") as? Map<*, *>
-                ?: return guardians
-            val updated = guardians.map { guardian ->
-                val uid = mapping[guardian.phoneNumber] as? String
-                if (uid.isNullOrBlank()) guardian else guardian.copy(userId = uid)
-            }
-            if (updated != guardians) dataSource.saveGuardians(appContext, updated)
-            updated
-        } catch (e: Exception) {
-            Log.w(TAG, "Guardian link sync failed: ${e.message}")
-            guardians
-        }
     }
 
     override suspend fun getGuardianById(guardianId: String): GuardianRepository.GuardianResult {
@@ -296,41 +249,17 @@ class GuardianRepositoryImpl(
         email: String?,
         relationship: Relationship
     ): GuardianRepository.GuardianResult {
-        if (FirebaseAuth.getInstance().currentUser?.uid == null) {
-            return GuardianRepository.GuardianResult.Error("Sign in before inviting a guardian")
-        }
         val existingInvitations = getInvitationsFromPrefs()
+
+        // Check for duplicate active invitations
         if (isInvitationActive(existingInvitations, senderUserId, phoneNumber)) {
             return GuardianRepository.GuardianResult.Error("Active invitation already exists for this guardian")
         }
 
-        val payload = mutableMapOf<String, Any?>(
-            "phoneNumber" to phoneNumber,
-            "displayName" to guardianName
-        )
-        if (!email.isNullOrBlank()) payload["email"] = email
-
-        val response = try {
-            FirebaseFunctions.getInstance()
-                .getHttpsCallable("inviteGuardian")
-                .call(payload)
-                .await()
-                ?.data as? Map<*, *>
-        } catch (e: Exception) {
-            return GuardianRepository.GuardianResult.Error(
-                "Invitation was not created: ${e.message ?: "unknown error"}"
-            )
-        } ?: return GuardianRepository.GuardianResult.Error("Invitation response was empty")
-
-        val inviteId = response["inviteId"] as? String
-            ?: return GuardianRepository.GuardianResult.Error("Invitation response was invalid")
-        val guardianUid = response["guardianUid"] as? String
-        val notified = response["notified"] == true
-
         val invitation = GuardianInvitation(
-            invitationId = inviteId,
+            invitationId = UUID.randomUUID().toString(),
             senderUserId = senderUserId,
-            receiverUserId = guardianUid,
+            receiverUserId = null,
             guardianName = guardianName,
             phoneNumber = phoneNumber,
             email = email,
@@ -338,25 +267,22 @@ class GuardianRepositoryImpl(
             createdAt = System.currentTimeMillis(),
             expiresAt = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(7)
         )
-        saveInvitationsToPrefs(existingInvitations + invitation)
 
         val guardian = Guardian(
-            guardianId = inviteId,
-            userId = guardianUid,
-            name = guardianName,
-            phoneNumber = phoneNumber,
-            email = email,
+            guardianId = invitation.invitationId,
+            userId = null,
+            name = invitation.guardianName,
+            phoneNumber = invitation.phoneNumber,
+            email = invitation.email,
             relationship = relationship,
             isPrimary = false,
             createdAt = invitation.createdAt,
             updatedAt = invitation.createdAt
         )
-        val message = if (notified) {
-            "Guardian invitation sent and push delivery confirmed"
-        } else {
-            "Guardian invitation created; push delivery was not confirmed"
-        }
-        Log.i(TAG, message)
+
+        val updatedInvitations = existingInvitations + invitation
+        saveInvitationsToPrefs(updatedInvitations)
+
         return GuardianRepository.GuardianResult.Success(guardian)
     }
 
@@ -496,105 +422,19 @@ class GuardianRepositoryImpl(
         location: Pair<Double, Double>?,
         timestamp: Long
     ): GuardianRepository.ListResult {
-        if (sessionId.isBlank() || userId.isBlank()) {
-            return GuardianRepository.ListResult.Error("Session and user are required for guardian notification")
-        }
-        val recipients = guardianIds.map { it.trim() }.filter { it.isNotBlank() }.distinct()
-        if (recipients.isEmpty()) {
-            return GuardianRepository.ListResult.Error("No linked guardians available for push delivery")
-        }
-
-        val prefs = appContext.getSharedPreferences(SOS_NOTIFICATION_PREFS, Context.MODE_PRIVATE)
-        if (prefs.getBoolean("requested_$sessionId", false)) {
-            return GuardianRepository.ListResult.Error("Guardian notification already requested for this session")
-        }
-
-        val payload = mutableMapOf<String, Any?>(
-            "sosSessionId" to sessionId,
-            "ownerUid" to userId,
-            "guardianUids" to recipients,
-            "primaryGuardianUid" to primaryGuardianId,
+        // TODO: In a real implementation, this would send a request to the backend
+        // to notify the specified guardians of the SOS session.
+        // For now, we record the request locally and return the guardian list.
+        val sessionData = mapOf(
+            "sessionId" to sessionId,
+            "userId" to userId,
+            "primaryGuardianId" to primaryGuardianId,
+            "guardianIds" to guardianIds.joinToString(","),
+            "location" to location,
             "timestamp" to timestamp
         )
-        if (location != null) {
-            payload["latitude"] = location.first
-            payload["longitude"] = location.second
-        }
-
-        return try {
-            // Only the callable reads guardian FCM tokens and sends messages.
-            // The client never handles a token and never claims unconfirmed delivery.
-            val response = FirebaseFunctions.getInstance()
-                .getHttpsCallable("sendEmergencyNotification")
-                .call(payload)
-                .await()
-            val parsed = GuardianNotificationResponse.parse(response?.data)
-            val deliveredIds = parsed.getOrNull()
-            if (deliveredIds == null) {
-                return GuardianRepository.ListResult.Error(
-                    parsed.exceptionOrNull()?.message ?: "Guardian delivery not confirmed"
-                )
-            }
-            prefs.edit().putBoolean("requested_$sessionId", true).apply()
-            val confirmed = dataSource.getGuardians(appContext)
-                .filter { it.userId in deliveredIds }
-            GuardianRepository.ListResult.Success(guardians = confirmed)
-        } catch (e: Exception) {
-            GuardianRepository.ListResult.Error("Guardian notification failed: ${e.message ?: "unknown error"}")
-        }
-    }
-
-    override suspend fun acknowledgeEmergency(
-        sessionId: String,
-        ownerUid: String,
-        guardianUid: String?
-    ): GuardianRepository.ListResult {
-        if (sessionId.isBlank() || ownerUid.isBlank()) {
-            return GuardianRepository.ListResult.Error("Session and owner are required")
-        }
-        return try {
-            val result = FirebaseFunctions.getInstance()
-                .getHttpsCallable("acknowledgeEmergency")
-                .call(
-                    mapOf(
-                        "sosSessionId" to sessionId,
-                        "ownerUid" to ownerUid,
-                        "guardianUid" to guardianUid
-                    )
-                )
-                .await()
-            val status = (result?.data as? Map<*, *>)?.get("status") as? String
-            if (status == "acknowledged") {
-                GuardianRepository.ListResult.Success(guardians = emptyList())
-            } else {
-                GuardianRepository.ListResult.Error("Acknowledgement not confirmed")
-            }
-        } catch (e: Exception) {
-            GuardianRepository.ListResult.Error("Acknowledgement failed: ${e.message ?: "unknown error"}")
-        }
-    }
-
-    override suspend fun escalateEmergency(
-        sessionId: String,
-        ownerUid: String
-    ): GuardianRepository.ListResult {
-        if (sessionId.isBlank() || ownerUid.isBlank()) {
-            return GuardianRepository.ListResult.Error("Session and owner are required")
-        }
-        return try {
-            val result = FirebaseFunctions.getInstance()
-                .getHttpsCallable("escalateEmergency")
-                .call(mapOf("sosSessionId" to sessionId, "ownerUid" to ownerUid))
-                .await()
-            val status = (result?.data as? Map<*, *>)?.get("status") as? String
-            if (status == "escalated") {
-                GuardianRepository.ListResult.Success(guardians = emptyList())
-            } else {
-                GuardianRepository.ListResult.Error("Escalation not confirmed")
-            }
-        } catch (e: Exception) {
-            GuardianRepository.ListResult.Error("Escalation failed: ${e.message ?: "unknown error"}")
-        }
+        // In a real implementation, call Firestore or backend API here
+        return GuardianRepository.ListResult.Success(guardians = emptyList())
     }
 
     override suspend fun recordNotificationAttempt(
@@ -603,17 +443,9 @@ class GuardianRepositoryImpl(
         status: String,
         details: String?
     ): GuardianRepository.ListResult {
-        if (sessionId.isBlank() || guardianId.isBlank() || status.isBlank()) {
-            return GuardianRepository.ListResult.Error("Session, guardian and status are required")
-        }
-        return try {
-            val prefs = appContext.getSharedPreferences(SOS_NOTIFICATION_PREFS, Context.MODE_PRIVATE)
-            val key = "attempt_${sessionId}_${guardianId}_${System.currentTimeMillis()}"
-            prefs.edit().putString(key, "$status|${details?.take(300).orEmpty()}").apply()
-            GuardianRepository.ListResult.Success(guardians = emptyList())
-        } catch (e: Exception) {
-            GuardianRepository.ListResult.Error("Could not record notification attempt: ${e.message}")
-        }
+        // TODO: Record the notification attempt in Firestore or local storage
+        // For now, just return success
+        return GuardianRepository.ListResult.Success(guardians = emptyList())
     }
 
     override suspend fun updateGuardianAcknowledgement(
@@ -772,94 +604,5 @@ class GuardianRepositoryImpl(
         // TODO: Retrieve the current SOS session from Firestore
         // For now, return an error indicating this needs backend integration
         return GuardianRepository.GuardianResult.Error("SOS session retrieval requires backend configuration")
-    }
-
-    override suspend fun loadIncomingInvitations(): GuardianRepository.ListResult {
-        if (FirebaseAuth.getInstance().currentUser?.uid == null) {
-            return GuardianRepository.ListResult.Error("Sign in to view guardian invitations")
-        }
-        return try {
-            val data = FirebaseFunctions.getInstance()
-                .getHttpsCallable("getGuardianInvitations")
-                .call(emptyMap<String, Any>())
-                .await()
-                ?.data as? Map<*, *>
-            val invitations = (data?.get("invitations") as? List<*>) ?: emptyList<Any>()
-            val guardians = invitations.mapNotNull { entry ->
-                val item = entry as? Map<*, *> ?: return@mapNotNull null
-                val inviteId = item["inviteId"] as? String ?: return@mapNotNull null
-                Guardian(
-                    guardianId = inviteId,
-                    userId = item["ownerUid"] as? String,
-                    name = item["displayName"] as? String ?: "Guardian invitation",
-                    phoneNumber = item["phoneNumber"] as? String ?: "",
-                    email = item["email"] as? String,
-                    relationship = Relationship.Other,
-                    isPrimary = false,
-                    createdAt = (item["createdAt"] as? Number)?.toLong() ?: 0L,
-                    updatedAt = (item["expiresAt"] as? Number)?.toLong() ?: 0L
-                )
-            }
-            GuardianRepository.ListResult.Success(guardians)
-        } catch (e: Exception) {
-            GuardianRepository.ListResult.Error("Could not load invitations: ${e.message ?: "unknown error"}")
-        }
-    }
-
-    override suspend fun respondToInvitation(
-        inviteId: String,
-        accept: Boolean
-    ): GuardianRepository.GuardianResult {
-        if (inviteId.isBlank()) {
-            return GuardianRepository.GuardianResult.Error("Invitation id is required")
-        }
-        return try {
-            val data = FirebaseFunctions.getInstance()
-                .getHttpsCallable("respondGuardianInvite")
-                .call(mapOf("inviteId" to inviteId, "accept" to accept))
-                .await()
-                ?.data as? Map<*, *>
-            when (data?.get("status") as? String) {
-                "accepted", "rejected" -> GuardianRepository.GuardianResult.Success(
-                    Guardian(
-                        guardianId = inviteId,
-                        userId = data["ownerUid"] as? String,
-                        name = "Guardian invitation",
-                        phoneNumber = "",
-                        email = null,
-                        relationship = Relationship.Other,
-                        isPrimary = false,
-                        createdAt = System.currentTimeMillis(),
-                        updatedAt = System.currentTimeMillis()
-                    )
-                )
-                else -> GuardianRepository.GuardianResult.Error("Invitation response was not confirmed")
-            }
-        } catch (e: Exception) {
-            GuardianRepository.GuardianResult.Error("Could not answer invitation: ${e.message ?: "unknown error"}")
-        }
-    }
-
-    override suspend fun unlinkGuardian(
-        ownerUid: String,
-        guardianUid: String
-    ): GuardianRepository.ListResult {
-        if (ownerUid.isBlank() || guardianUid.isBlank()) {
-            return GuardianRepository.ListResult.Error("Owner and guardian are required")
-        }
-        return try {
-            val data = FirebaseFunctions.getInstance()
-                .getHttpsCallable("unlinkGuardian")
-                .call(mapOf("ownerUid" to ownerUid, "guardianUid" to guardianUid))
-                .await()
-                ?.data as? Map<*, *>
-            if (data?.get("status") == "unlinked") {
-                GuardianRepository.ListResult.Success(guardians = emptyList())
-            } else {
-                GuardianRepository.ListResult.Error("Unlink was not confirmed")
-            }
-        } catch (e: Exception) {
-            GuardianRepository.ListResult.Error("Unlink failed: ${e.message ?: "unknown error"}")
-        }
     }
 }

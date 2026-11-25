@@ -45,10 +45,7 @@ class EvidenceManager(private val context: Context) {
 
     // ── Audio recording ───────────────────────────────────────────────────────
 
-    private var activeSosId: String? = null
-
-    fun startChunkedAudioRecording(sosId: String? = null) {
-        activeSosId = sosId
+    fun startChunkedAudioRecording() {
         if (isRecording) return
         startNewChunk()
 
@@ -70,7 +67,7 @@ class EvidenceManager(private val context: Context) {
 
     private fun startNewChunk() {
         stopCurrentRecorder()
-        val file = createEvidenceFile("audio_${chunkIndex++}", "m4a", activeSosId)
+        val file = createEvidenceFile("audio_${chunkIndex++}", "m4a")
         audioFiles.add(file)
 
         @Suppress("DEPRECATION")
@@ -163,9 +160,8 @@ class EvidenceManager(private val context: Context) {
     fun createEvidenceDir(sosId: String): File =
         File(context.getExternalFilesDir(null), "Evidence/$sosId").also { it.mkdirs() }
 
-    fun createEvidenceFile(name: String, ext: String, sosId: String? = null): File {
-        val base = if (sosId.isNullOrBlank()) "Evidence/temp" else "Evidence/$sosId/audio"
-        val dir = File(context.getExternalFilesDir(null), base).also { it.mkdirs() }
+    private fun createEvidenceFile(name: String, ext: String): File {
+        val dir = File(context.getExternalFilesDir(null), "Evidence/temp").also { it.mkdirs() }
         val ts  = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         return File(dir, "${name}_$ts.$ext")
     }

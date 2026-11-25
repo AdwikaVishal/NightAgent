@@ -1,383 +1,102 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NightAgent — Live Journey Tracker</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="./contract.js"></script>
-  <style>
-    :root { color-scheme: light; font-family: system-ui, -apple-system, sans-serif; }
-    * { box-sizing: border-box; }
-    body { margin: 0; background: #f4f6fb; color: #172033; }
-    header { padding: 16px 20px; background: #172033; color: white; }
-    header h1 { margin: 0; font-size: 20px; }
-    header p { margin: 4px 0 0; font-size: 13px; opacity: .8; }
-    main { display: grid; grid-template-columns: minmax(280px, 360px) 1fr; gap: 16px; padding: 16px; }
-    .panel { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 2px 12px rgba(20,30,60,.08); }
-    .panel h2 { margin: 0 0 12px; font-size: 16px; }
-    label { display: block; font-size: 12px; font-weight: 600; margin: 10px 0 4px; }
-    label.checkbox-label { display: flex; align-items: center; gap: 8px; font-weight: 500; }
-    label.checkbox-label input { width: auto; margin: 0; }
-    input { width: 100%; padding: 9px 10px; border: 1px solid #ccd3e0; border-radius: 8px; font-size: 14px; }
-    button { margin-top: 10px; padding: 9px 14px; border: 0; border-radius: 8px; background: #3457d5; color: white; font-weight: 600; cursor: pointer; }
-    button.secondary { background: #e8ebf4; color: #172033; }
-    button:disabled { opacity: .55; cursor: not-allowed; }
-    #map { height: calc(100vh - 110px); min-height: 480px; border-radius: 12px; }
-    .row { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-bottom: 1px solid #eef1f7; font-size: 13px; }
-    .row span:first-child { color: #667085; }
-    .row span:last-child { text-align: right; font-weight: 600; overflow-wrap: anywhere; }
-    .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-    .badge.active { background: #dff7e8; color: #177245; }
-    .badge.stale { background: #fff0d6; color: #9a5b00; }
-    .badge.offline { background: #e7e9ef; color: #475467; }
-    .badge.error { background: #ffe2e2; color: #a31621; }
-    #message { margin-top: 12px; font-size: 13px; line-height: 1.45; }
-    @media (max-width: 900px) { main { grid-template-columns: 1fr; } #map { height: 55vh; } }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Location Tracker - NightAgent</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+        import { getFirestore, collection, query, orderBy, limit, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+
+        // TODO: Replace with your Firebase config from Firebase Console
+        const firebaseConfig = {
+            // apiKey: "your-api-key",
+            // authDomain: "your-project.firebaseapp.com",
+            // projectId: "your-project-id",
+            // storageBucket: "your-project.appspot.com",
+            // messagingSenderId: "123",
+            // appId: "your-app-id"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+    </script>
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; }
+        #map { height: 100vh; width: 100vw; }
+        #status { position: absolute; top: 10px; left: 10px; background: white; padding: 10px; border-radius: 5px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); z-index: 1000; }
+        #user-info { margin-bottom: 10px; }
+    </style>
 </head>
 <body>
-  <header>
-    <h1>NightAgent — Live Journey Tracker</h1>
-    <p>Real-time, owner/guardian-only view of an active Safe Journey.</p>
-  </header>
-  <main>
-    <section>
-      <div class="panel">
-        <h2>Guardian access</h2>
-        <div id="authBox">
-          <label for="email">Email</label>
-          <input id="email" type="email" autocomplete="username" placeholder="guardian@example.com" />
-          <label for="password">Password</label>
-          <input id="password" type="password" autocomplete="current-password" />
-          <button id="signIn">Sign in</button>
-          <button id="signOut" class="secondary" hidden>Sign out</button>
-          <div id="authMessage"></div>
-        </div>
-      </div>
+    <div id="status">
+        <div id="user-info">Loading user...</div>
+        <div id="location-info">No location data</div>
+        <div id="last-update">Last update: Never</div>
+    </div>
+    <div id="map"></div>
 
-      <div class="panel" style="margin-top:16px">
-        <h2>Journey under tracking</h2>
-        <label for="targetUid">User ID to follow</label>
-        <input id="targetUid" placeholder="Firebase Auth UID of the person being tracked" />
-        <div style="margin-top:12px">
-          <h2 style="font-size:14px">Manual location check</h2>
-          <label for="lat">Latitude</label>
-          <input id="lat" type="number" step="any" value="19.0760" />
-          <label for="lng">Longitude</label>
-          <input id="lng" type="number" step="any" value="72.8777" />
-          <label class="checkbox-label"><input id="accuracy-toggle" type="checkbox" /> Include accuracy</label>
-          <input id="accuracy" type="number" min="0" step="any" value="25" aria-label="Accuracy in meters" disabled />
-          <label class="checkbox-label"><input id="offline-toggle" type="checkbox" /> Simulate offline</label>
-          <button id="simulate" type="button">Render test location</button>
-        </div>
-        <div id="message">Sign in to load a journey.</div>
-      </div>
+    <script type="module">
+        // Parse userId from URL path e.g., /track/test_user → test_user
+        const path = window.location.pathname;
+        const userId = path.split('/').pop() || 'test_user';
+        document.getElementById('user-info').innerHTML = `<strong>Tracking: ${userId}</strong>`;
 
-      <div class="panel" style="margin-top:16px">
-        <h2>Live status</h2>
-        <div id="details"></div>
-      </div>
-    </section>
+        const map = L.map('map').setView([40.7128, -74.0060], 13); // Default NYC view
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        }).addTo(map);
 
-    <section>
-      <div id="map"></div>
-    </section>
-  </main>
+        let marker = L.marker([40.7128, -74.0060]).addTo(map)
+            .bindPopup('Live location')
+            .openPopup();
 
-  <script type="module">
-    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-    import {
-      getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut
-    } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-    import {
-      getFirestore, collection, query, where, orderBy, limit, onSnapshot, doc
-    } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+        let unsubscribe;
 
-    const contract = window.NightAgentTrackerContract;
-    const STALE_AFTER_MS = contract.STALE_AFTER_MS;
-    const $ = (id) => document.getElementById(id);
+        // Real-time listener for latest location
+        const q = query(
+            collection(db, `safe_walks/${userId}/locations`),
+            orderBy('timestamp', 'desc'),
+            limit(1)
+        );
 
-    // Firebase Hosting serves the canonical project configuration at this
-    // endpoint. No API key, project id, or credential is embedded in source.
-    let configResponse;
-    try {
-      configResponse = await fetch('/__/firebase/init.json');
-      if (!configResponse.ok) throw new Error(`HTTP ${configResponse.status}`);
-    } catch (error) {
-      $('message').textContent =
-        'Firebase configuration is unavailable. Deploy this folder with Firebase Hosting so the canonical project config can be injected at runtime.';
-      throw error;
-    }
+        unsubscribe = onSnapshot(q, (snapshot) => {
+            if (!snapshot.empty) {
+                const locationData = snapshot.docs[0].data();
+                const lat = locationData.latitude;
+                const lng = locationData.longitude;
+                const timestamp = new Date(locationData.timestamp * 1000); // Assume seconds
 
-    const app = initializeApp(await configResponse.json());
-    const auth = getAuth(app);
-    const db = getFirestore(app);
+                // Update map
+                map.setView([lat, lng], 16);
+                marker.setLatLng([lat, lng]);
 
-    const map = L.map('map').setView([20, 0], 2);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-      maxZoom: 19
-    }).addTo(map);
+                // Update UI
+                document.getElementById('location-info').textContent = 
+                    `Lat: ${lat.toFixed(6)}, Lng: ${lng.toFixed(6)}`;
+                document.getElementById('last-update').textContent = 
+                    `Last update: ${timestamp.toLocaleString()}`;
 
-    const locationMarker = L.marker([0, 0], { opacity: 0 }).addTo(map);
-    const destinationMarker = L.marker([0, 0], { opacity: 0 }).addTo(map);
-    let routeLayer = null;
+                console.log('Location updated:', { lat, lng, timestamp });
+            } else {
+                document.getElementById('location-info').textContent = 'No active safe walk';
+            }
+        }, (error) => {
+            console.error('Firestore error:', error);
+            document.getElementById('location-info').textContent = 'Error loading data';
+        });
 
-    let currentUser = null;
-    let targetUid = '';
-    let activeJourneyId = null;
-    let listeners = [];
-    let activeQueryUnsubscribe = null;
-    let lastLocation = null;
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (unsubscribe) unsubscribe();
+        });
 
-    function clearDetails() {
-      listeners.forEach((unsubscribe) => { try { unsubscribe(); } catch (_) {} });
-      listeners = [];
-      activeJourneyId = null;
-      lastLocation = null;
-      if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
-      locationMarker.setOpacity(0);
-      destinationMarker.setOpacity(0);
-    }
-
-    function clearListeners() {
-      clearDetails();
-      if (activeQueryUnsubscribe) {
-        try { activeQueryUnsubscribe(); } catch (_) {}
-        activeQueryUnsubscribe = null;
-      }
-    }
-
-    function setMessage(text, kind = '') {
-      const el = $('message');
-      el.textContent = text;
-      el.className = kind ? `badge ${kind}` : '';
-    }
-
-    const toMillis = contract.toMillis;
-    const isValidPoint = contract.isValidPoint;
-
-    function formatTime(ms) {
-      return ms > 0 ? new Date(ms).toLocaleString() : '—';
-    }
-
-    function renderRoute(points) {
-      if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
-      if (!Array.isArray(points)) return;
-      const coords = points.filter(isValidPoint).map((p) => [p.latitude, p.longitude]);
-      if (coords.length >= 2) {
-        routeLayer = L.polyline(coords, { color: '#3457d5', weight: 4, opacity: 0.75 }).addTo(map);
-      }
-    }
-
-    function escapeHtml(value) {
-      return String(value ?? '—')
-        .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;').replaceAll("'", '&#039;');
-    }
-
-    function renderDetails(data) {
-      const rows = Object.entries(data).map(([key, value]) =>
-        `<div class="row"><span>${escapeHtml(key)}</span><span>${escapeHtml(value)}</span></div>`
-      ).join('');
-      $('details').innerHTML = rows;
-    }
-
-    function renderLocation(point, metadata) {
-      if (!isValidPoint(point)) return;
-      lastLocation = point;
-      const latLng = [point.latitude, point.longitude];
-      locationMarker.setLatLng(latLng).setOpacity(1).bindPopup(
-        `Last known location<br>${point.latitude.toFixed(6)}, ${point.longitude.toFixed(6)}`
-      );
-
-      const stamp = toMillis(point.timestamp);
-      const now = Date.now();
-      const age = stamp > 0 ? now - stamp : Number.POSITIVE_INFINITY;
-      const stale = contract.isStale(point.timestamp, now, STALE_AFTER_MS);
-      const fromCache = !!(metadata && metadata.fromCache);
-
-      renderDetails({
-        'Journey': dataSnapshot.journeyId || '—',
-        'Status': dataSnapshot.status || '—',
-        'Destination': dataSnapshot.destinationName || '—',
-        'Route points': Array.isArray(dataSnapshot.routePoints) ? dataSnapshot.routePoints.length : 0,
-        'ETA': formatTime(toMillis(dataSnapshot.expectedArrivalTime)),
-        'Journey updated': formatTime(toMillis(dataSnapshot.updatedAt)),
-        'Latitude': point.latitude.toFixed(6),
-        'Longitude': point.longitude.toFixed(6),
-        'Accuracy': point.accuracy ? `±${Number(point.accuracy).toFixed(0)} m` : '—',
-        'Location time': formatTime(stamp),
-        'Location age': Number.isFinite(age) ? `${Math.round(age / 1000)} s` : 'unknown',
-        'Connection': fromCache ? 'offline / cached' : 'live'
-      });
-
-      if (stale) setMessage('Location is stale. The tracker may be offline or GPS updates have stopped.', 'stale');
-      else if (fromCache) setMessage('Showing cached data while offline. Writes are queued on the device.', 'offline');
-      else setMessage('Live Firestore listener connected.');
-
-      if (map.getZoom() < 10 || !map.getBounds().contains(L.latLng(latLng))) {
-        map.setView(latLng, 16);
-      }
-    }
-
-    const dataSnapshot = {};
-
-    function listenJourney(journeyId) {
-      activeJourneyId = journeyId;
-      dataSnapshot.journeyId = journeyId;
-
-      listeners.push(onSnapshot(doc(db, 'journeys', journeyId), (snap, error) => {
-        if (error) { setMessage(`Journey read denied or unavailable: ${error.message}`, 'error'); return; }
-        if (!snap.exists()) { setMessage('Journey document no longer exists.', 'error'); return; }
-        const data = snap.data() || {};
-        dataSnapshot.status = data.status || '';
-        dataSnapshot.destinationName = data.destinationName || '';
-        dataSnapshot.expectedArrivalTime = data.expectedArrivalTime;
-        dataSnapshot.updatedAt = data.updatedAt;
-        dataSnapshot.routePoints = data.routePoints || [];
-        renderRoute(data.routePoints);
-
-        if (isValidPoint({ latitude: data.destinationLatitude, longitude: data.destinationLongitude })) {
-          destinationMarker
-            .setLatLng([data.destinationLatitude, data.destinationLongitude])
-            .setOpacity(1)
-            .bindPopup(`Destination: ${data.destinationName || 'unknown'}`);
-        }
-      }, (error) => setMessage(`Journey listener failed: ${error.message}`, 'error')));
-
-      // Only the most recent fix is read. No broad location history is exposed.
-      const locationSpec = contract.latestLocationQuery(journeyId, targetUid);
-      const [locationsCollection, locationDoc, locationsSub] = locationSpec.path.split('/');
-      const locationQuery = query(
-        collection(db, locationsCollection, locationDoc, locationsSub),
-        orderBy(locationSpec.orderBy[0], locationSpec.orderBy[1]),
-        limit(locationSpec.limit)
-      );
-      listeners.push(onSnapshot(locationQuery, (snapshot) => {
-        if (snapshot.empty) {
-          setMessage('Journey is active but no location has been recorded yet.');
-          return;
-        }
-        renderLocation(snapshot.docs[0].data(), snapshot.metadata);
-      }, (error) => setMessage(`Location listener failed: ${error.message}`, 'error')));
-    }
-
-    function listenLegacyWalk() {
-      const walkRef = doc(db, 'safe_walks', targetUid);
-      listeners.push(onSnapshot(walkRef, (snap) => {
-        if (!snap.exists()) {
-          setMessage('No active journey found for this user.');
-          return;
-        }
-        const data = snap.data() || {};
-        dataSnapshot.journeyId = data.journeyId || 'legacy safe walk';
-        dataSnapshot.status = data.status || (data.isActive ? 'ACTIVE' : 'INACTIVE');
-        dataSnapshot.destinationName = data.destinationName || '—';
-        dataSnapshot.expectedArrivalTime = data.expectedArrivalTime;
-        dataSnapshot.updatedAt = data.lastLocationAt;
-        dataSnapshot.routePoints = [];
-        setMessage('Showing legacy safe_walks mirror. No canonical active journey was found.');
-      }, (error) => setMessage(`Legacy walk read denied: ${error.message}`, 'error')));
-
-      const legacySpec = contract.legacyLocationQuery(targetUid);
-      const [legacyRoot, legacyUser, legacySub] = legacySpec.path.split('/');
-      const legacyLocations = query(
-        collection(db, legacyRoot, legacyUser, legacySub),
-        orderBy(legacySpec.orderBy[0], legacySpec.orderBy[1]),
-        limit(legacySpec.limit)
-      );
-      listeners.push(onSnapshot(legacyLocations, (snapshot) => {
-        if (!snapshot.empty) renderLocation(snapshot.docs[0].data(), snapshot.metadata);
-      }, (error) => setMessage(`Legacy location listener failed: ${error.message}`, 'error')));
-    }
-
-    function watchJourney() {
-      clearListeners();
-      if (!currentUser || !targetUid) {
-        renderDetails({});
-        setMessage(currentUser ? 'Enter the user ID to follow.' : 'Sign in as the owner or a linked guardian.');
-        return;
-      }
-      setMessage('Connecting to Firestore…');
-      const spec = contract.activeJourneyQuery(targetUid);
-      const activeQuery = query(
-        collection(db, spec.collection),
-        ...spec.where.map(([field, op, value]) => where(field, op, value)),
-        orderBy(spec.orderBy[0], spec.orderBy[1]),
-        limit(spec.limit)
-      );
-      activeQueryUnsubscribe = onSnapshot(activeQuery, (snapshot, error) => {
-        if (error) { setMessage(`Access denied or query unavailable: ${error.message}`, 'error'); return; }
-        clearDetails();
-        if (!snapshot.empty) {
-          listenJourney(snapshot.docs[0].id);
-        } else {
-          listenLegacyWalk();
-        }
-      }, (error) => setMessage(`Access denied: ${error.message}`, 'error'));
-    }
-
-    $('accuracy-toggle').addEventListener('change', () => {
-      $('accuracy').disabled = !$('accuracy-toggle').checked;
-    });
-
-    $('simulate').addEventListener('click', () => {
-      const lat = Number($('lat').value);
-      const lng = Number($('lng').value);
-      const accuracy = Number($('accuracy').value);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-        setMessage('Enter numeric latitude and longitude.', 'error');
-        return;
-      }
-      if (!isValidPoint({ latitude: lat, longitude: lng })) {
-        setMessage('Coordinates are outside the valid range.', 'error');
-        return;
-      }
-      const point = {
-        latitude: lat,
-        longitude: lng,
-        timestamp: Date.now()
-      };
-      if ($('accuracy-toggle').checked && Number.isFinite(accuracy) && accuracy >= 0) point.accuracy = accuracy;
-      renderLocation(point, { fromCache: $('offline-toggle').checked });
-    });
-
-    $('signIn').addEventListener('click', async () => {
-      $('authMessage').textContent = 'Signing in…';
-      try {
-        await signInWithEmailAndPassword(auth, $('email').value.trim(), $('password').value);
-        $('authMessage').textContent = '';
-      } catch (error) {
-        $('authMessage').textContent = `Sign-in failed: ${error.message}`;
-      }
-    });
-
-    $('signOut').addEventListener('click', async () => {
-      await signOut(auth);
-      $('email').value = '';
-      $('password').value = '';
-    });
-
-    onAuthStateChanged(auth, (user) => {
-      currentUser = user;
-      $('signIn').hidden = !!user;
-      $('signOut').hidden = !user;
-      $('authMessage').textContent = user ? `Signed in as ${user.email || user.uid}` : '';
-      watchJourney();
-    });
-
-    $('targetUid').value = contract.targetFromPath(window.location.pathname, window.location.search);
-    $('targetUid').addEventListener('change', () => {
-      targetUid = $('targetUid').value.trim();
-      watchJourney();
-    });
-    targetUid = $('targetUid').value;
-    watchJourney();
-
-    window.addEventListener('beforeunload', clearListeners);
-  </script>
+        // Manual refresh every 5s (backup to snapshot)
+        setInterval(() => {
+            console.log('Manual refresh check');
+        }, 5000);
+    </script>
 </body>
 </html>

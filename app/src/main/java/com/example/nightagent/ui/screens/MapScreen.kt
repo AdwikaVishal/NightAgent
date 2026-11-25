@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.location.Location
 import android.net.Uri
-import android.os.Bundle
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -33,8 +32,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.Saver
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,7 +44,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.nightagent.R
-import com.example.nightagent.map.MapTileSources
 import com.example.nightagent.sos.LocationProvider
 import com.example.nightagent.ui.theme.BlushPink
 import com.example.nightagent.ui.theme.Lavender
@@ -56,6 +52,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import org.osmdroid.config.Configuration
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
@@ -63,25 +61,6 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 private const val TAG = "MapScreen"
-
-private val geoPointSaver = Saver<GeoPoint?, Bundle>(
-    save = { point ->
-        Bundle().apply {
-            putBoolean("hasLocation", point != null)
-            if (point != null) {
-                putDouble("latitude", point.latitude)
-                putDouble("longitude", point.longitude)
-            }
-        }
-    },
-    restore = { bundle ->
-        if (bundle.getBoolean("hasLocation")) {
-            GeoPoint(bundle.getDouble("latitude"), bundle.getDouble("longitude"))
-        } else {
-            null
-        }
-    }
-)
 
 @Composable
 fun MapScreen(
@@ -92,13 +71,10 @@ fun MapScreen(
     val scope = rememberCoroutineScope()
     val safetyState by safetyViewModel.uiState.collectAsState()
 
-    var userLocation by rememberSaveable(stateSaver = geoPointSaver) { mutableStateOf<GeoPoint?>(null) }
+    var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
     var locationMessage by remember { mutableStateOf<String?>(null) }
     var showRiskDialog by remember { mutableStateOf(false) }
-    // Camera state is saved so returning to the Map tab restores the last view.
-    var savedZoom by rememberSaveable { mutableStateOf(16.0) }
-    var savedCenter by rememberSaveable(stateSaver = geoPointSaver) { mutableStateOf<GeoPoint?>(null) }
 
     fun loadLocationAndSafety() {
         LocationProvider.getLocation(context) { location: Location? ->
@@ -130,9 +106,16 @@ fun MapScreen(
         }
     }
 
-    // OsmDroid configuration and tile source selection live in MapTileSources;
-    // the MapView factory below applies them before any tile is requested.
+    // FIX 1: Initialise OsmDroid Configuration with .load() here, once,
+    // before the MapView is created. This sets the tile cache path and
+    // HTTP parameters — without it, tiles are never written to disk.
     LaunchedEffect(Unit) {
+        Configuration.getInstance().apply {
+            load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
+            userAgentValue = context.packageName
+        }
+        Log.d(TAG, "OsmDroid configuration loaded. Cache path: ${Configuration.getInstance().osmdroidTileCache}")
+
         if (hasLocationPermission(context)) {
             loadLocationAndSafety()
         } else {
@@ -145,12 +128,6 @@ fun MapScreen(
         }
     }
 
-    // The factory selects a source immediately; this verifies MapTiler with a
-    // single lightweight request and switches to OSM if it is unavailable.
-    LaunchedEffect(mapViewRef) {
-        mapViewRef?.let { MapTileSources.refreshTileSource(it, context, force = true) }
-    }
-
     // FIX 2: Wire MapView lifecycle into the Compose lifecycle so the tile
     // thread pool starts on resume and is released on pause/destroy.
     // Without onResume(), tiles are queued but never dispatched → blank map.
@@ -158,10 +135,7 @@ fun MapScreen(
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
-                    mapViewRef?.let { map ->
-                        map.onResume()
-                        scope.launch { MapTileSources.refreshTileSource(map, context) }
-                    }
+                    mapViewRef?.onResume()
                     Log.d(TAG, "MapView.onResume() called")
                 }
                 Lifecycle.Event.ON_PAUSE -> {
@@ -176,11 +150,7 @@ fun MapScreen(
             lifecycleOwner.lifecycle.removeObserver(observer)
             // FIX 3: onDetach() shuts down the tile download executor and
             // removes all overlay listeners — prevents memory leaks.
-            mapViewRef?.let { map ->
-                savedZoom = map.zoomLevelDouble
-                savedCenter = map.mapCenter as? GeoPoint
-                map.onDetach()
-            }
+            mapViewRef?.onDetach()
             Log.d(TAG, "MapView.onDetach() called — resources released")
         }
     }
@@ -220,11 +190,17 @@ fun MapScreen(
             factory = { ctx ->
                 Log.d(TAG, "AndroidView factory: creating MapView")
 
+                // Configuration is already loaded in LaunchedEffect above;
+                // this is a no-op if called again but kept for safety.
+                Configuration.getInstance().apply {
+                    load(ctx, ctx.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
+                    userAgentValue = ctx.packageName
+                }
+
                 MapView(ctx).also { mapView ->
-                    MapTileSources.configureMapView(mapView, ctx)
+                    mapView.setTileSource(TileSourceFactory.MAPNIK)
                     mapView.setMultiTouchControls(true)
-                    mapView.controller.setZoom(savedZoom)
-                    savedCenter?.let { mapView.controller.setCenter(it) }
+                    mapView.controller.setZoom(16.0)
 
                     // Start the tile thread pool immediately (onResume is the
                     // OsmDroid API for this — must be called at least once).

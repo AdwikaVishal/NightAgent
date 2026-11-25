@@ -1,5 +1,3 @@
-import java.util.Properties
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -7,22 +5,6 @@ plugins {
     id("com.google.gms.google-services")
     alias(libs.plugins.kotlin.android)
 }
-
-// MapTiler is a client-side key: it is injected at build time from the
-// machine-local (gitignored) local.properties file, or from an environment
-// variable in CI. It is never stored in a tracked source file.
-val localProperties = Properties().apply {
-    val file = rootProject.file("local.properties")
-    if (file.isFile) file.inputStream().use { load(it) }
-}
-val maptilerApiKey = System.getenv("MAPTILER_API_KEY")
-    ?: localProperties.getProperty("MAPTILER_API_KEY", "")
-
-fun escapeBuildConfigString(value: String): String = value
-    .replace("\\", "\\\\")
-    .replace("\"", "\\\"")
-    .replace("\n", "\\n")
-    .replace("\r", "\\r")
 
 android {
     namespace = "com.example.nightagent"
@@ -35,7 +17,6 @@ android {
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "MAPTILER_API_KEY", "\"${escapeBuildConfigString(maptilerApiKey)}\"")
     }
 
     buildTypes {
@@ -57,7 +38,6 @@ android {
     }
     buildFeatures {
         compose = true
-        buildConfig = true
     }
     kotlinOptions {
         jvmTarget = "11"
